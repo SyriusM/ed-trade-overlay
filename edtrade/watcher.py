@@ -58,7 +58,8 @@ def _find_journal_dir() -> Optional[Path]:
     return None
 
 # Pola interesujących nas eventów
-INTERESTING_EVENTS = {"Docked", "Loadout", "StartedSession", "Location", "Cargo", "Market", "Materials", "MarketBuy", "MarketSell"}
+INTERESTING_EVENTS = {"Docked", "Loadout", "StartedSession", "Location", "Cargo", "Market", "Materials", "MarketBuy", "MarketSell",
+                      "LoadGame"}
 
 
 class JournalWatcher:
@@ -89,6 +90,8 @@ class JournalWatcher:
         self._file_pos: int = 0
         self._running = False
         self._player_cargo: list[dict] = []
+        # Saldo z LoadGame, korygowane o handel (MarketBuy/MarketSell); None = jeszcze nieznane
+        self.credits: Optional[int] = None
 
     def _find_latest_journal(self) -> Optional[Path]:
         """Znajdź najnowszy plik journala wg mtime."""
@@ -226,7 +229,16 @@ class JournalWatcher:
                         self.on_materials(ev)
                     except Exception:
                         logger.exception("Błąd w on_materials")
+            elif event_type == "LoadGame":
+                if ev.get("Credits") is not None:
+                    self.credits = int(ev["Credits"])
+                    logger.debug("LoadGame: saldo %d cr", self.credits)
             elif event_type in ("MarketBuy", "MarketSell"):
+                if self.credits is not None:
+                    if event_type == "MarketBuy":
+                        self.credits -= int(ev.get("TotalCost") or 0)
+                    else:
+                        self.credits += int(ev.get("TotalSale") or 0)
                 if self.on_trade:
                     try:
                         self.on_trade(ev)

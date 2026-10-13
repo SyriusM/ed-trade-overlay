@@ -87,11 +87,13 @@ class RouteChecklist:
     def _matches(self, journal_type: str) -> bool:
         if not self.hop or not journal_type:
             return False
-        target = self.hop.commodity
         display = self.names.get(journal_type.lower())
-        if display:
-            return display.lower() == target.lower()
-        return _norm(journal_type) == _norm(target)
+        for target in self.hop.names:  # cały ładunek hopu, nie tylko główny towar
+            if display and display.lower() == target.lower():
+                return True
+            if not display and _norm(journal_type) == _norm(target):
+                return True
+        return False
 
     def at_destination(self) -> bool:
         hop = self.hop

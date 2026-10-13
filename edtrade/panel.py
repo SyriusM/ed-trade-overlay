@@ -682,8 +682,13 @@ class TradePanel:
         mark = '✓' if done else ('▶' if active else str(index))
         tk.Label(card, text=mark, bg=bg, fg=tce.GREEN if done else fg, font=f.big, width=3).grid(
             row=0, column=0, rowspan=3, sticky='ns')
-        buy = f'→  {hop.source_station} · {hop.source_system}    KUP {hop.commodity} ×{hop.amount} @ {hop.buy_price:,} CR'
-        sell = f'←  {hop.destination_station} · {hop.destination_system}    SPRZEDAJ @ {hop.sell_price:,} CR'
+        if len(hop.commodities) > 1:  # pełna ładownia z kilku towarów — każdy z ilością i ceną kupna → sprzedaży
+            goods = ', '.join(f'{c.name} ×{c.amount} @ {c.buy_price:,} → {c.sell_price:,}' for c in hop.commodities)
+            buy = f'→  {hop.source_station} · {hop.source_system}    KUP {hop.amount} T: {goods} CR'
+            sell = f'←  {hop.destination_station} · {hop.destination_system}    SPRZEDAJ WSZYSTKO'
+        else:
+            buy = f'→  {hop.source_station} · {hop.source_system}    KUP {hop.commodity} ×{hop.amount} @ {hop.buy_price:,} CR'
+            sell = f'←  {hop.destination_station} · {hop.destination_system}    SPRZEDAJ @ {hop.sell_price:,} CR'
         tk.Label(card, text=buy.upper(), bg=bg, fg=fg, font=f.body_bold, anchor='w').grid(
             row=0, column=1, sticky='ew', padx=(4, 8), pady=(6, 0))
         tk.Label(card, text=sell.upper(), bg=bg, fg=fg, font=f.body_bold, anchor='w').grid(

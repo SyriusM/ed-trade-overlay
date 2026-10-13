@@ -71,8 +71,8 @@ def parse_args():
     parser.add_argument(
         "--credits",
         type=int,
-        default=100_000,
-        help="Dostępne kredyty (cr)",
+        default=None,
+        help="Dostępne kredyty (cr); domyślnie saldo z journala (LoadGame), a gdy nieznane — bez limitu",
     )
     parser.add_argument(
         "--ly-per",
@@ -201,6 +201,7 @@ class EDTradeOverlayApp:
             "Loadout: capacity %.1f → %.1f, przeliczam trasę dla %s",
             self._last_capacity, capacity, key,
         )
+        self._sync_credits()
         route = self.trade_engine.calculate_route_via_spansh(system, station)
 
         if route.error:
@@ -225,6 +226,11 @@ class EDTradeOverlayApp:
         self.trade_engine.requires_large_pad = market_filter.requires_large_pad
         self.trade_engine.max_star_ls = market_filter.max_star_ls
         return market_filter
+
+    def _sync_credits(self) -> None:
+        """Kapitał dla Spansh = saldo z journala (chyba że podano --credits)."""
+        if self.args.credits is None and self.watcher.credits is not None:
+            self.trade_engine.credits = self.watcher.credits
 
     def _publish_route(self, route, system: str, station: str) -> None:
         """Nowa trasa → nowa checklista (kup → leć → sprzedaj) i wysłanie do overlaya."""
@@ -299,6 +305,7 @@ class EDTradeOverlayApp:
             logger.info("Docked w celu hopu %d — trasa w toku, bez przeliczania", self.checklist.hop_index + 1)
         else:
             self._apply_market_filter()
+            self._sync_credits()
             route = self.trade_engine.calculate_route_via_spansh(system, station)
 
         # Pobierz info o systemie i stacjach

@@ -216,3 +216,61 @@ class TestLargePad(unittest.TestCase):
             self.assertTrue(ship_needs_large_pad(ship), ship)
         for ship in ("python", "krait_mkii", "type6", "asp", "", None):
             self.assertFalse(ship_needs_large_pad(ship), ship)
+
+
+def _spansh_segment(src, dst, comms, cumulative):
+    return {"source": {"system": src, "station": src}, "destination": {"system": dst, "station": dst},
+            "distance": 10.0, "total_profit": sum(c[4] for c in comms), "cumulative_profit": cumulative,
+            "commodities": [{"name": n, "amount": a, "total_profit": p,
+                             "source_commodity": {"buy_price": b}, "destination_commodity": {"sell_price": s}}
+                            for n, a, b, s, p in comms]}
+
+
+class TestFullHold(unittest.TestCase):
+    """Spansh dopełnia ładownię kilkoma towarami — liczy się cały ładunek, nie pierwszy towar z listy."""
+
+    def test_hop_counts_whole_load(self):
+        from edtrade.trade import TradeEngine
+        # Wynik Spansh Ham Dock → Rota Obscura (400 t ładowni): 1 t srebra to tylko dopełnienie
+        data = {"result": [_spansh_segment("Ham Dock", "Rota Obscura", [
+            ("Silver", 1, 30363, 41188, 10825), ("Cobalt", 140, 845, 20108, 2696820),
+            ("Polymers", 172, 47, 9332, 1597020), ("Biowaste", 1, 31, 85, 54)], 4304719)]}
+        route = TradeEngine()._parse_spansh_result(data, "Ham Dock", "Ham Dock")
+        hop = route.hops_list[0]
+        self.assertEqual(hop.commodity, "Cobalt")
+        self.assertEqual((hop.buy_price, hop.sell_price), (845, 20108))
+        self.assertEqual(hop.amount, 314)
+        self.assertEqual(hop.profit, 4304719)
+        self.assertEqual(route.total_profit, 4304719)
+        self.assertEqual(route.cargo_used, 314)
+        self.assertEqual(route.buy_quantity, 140)
+        self.assertEqual(hop.names, ["Cobalt", "Polymers", "Silver", "Biowaste"])
+        self.assertEqual(hop.cargo_text(), "Cobalt ×140 + Polymers ×172 +2")
+
+    def test_single_commodity_text(self):
+        from edtrade.trade import Hop
+        self.assertEqual(Hop(commodity="Gold", amount=400).cargo_text(), "Gold ×400")
+
+    def test_capital_from_balance(self):
+        from unittest import mock
+        from edtrade import trade
+        engine = trade.TradeEngine()
+        self.assertEqual(engine.capital, trade.UNLIMITED_CAPITAL)  # saldo nieznane → limitem jest ładownia
+        engine.credits = 59_538_834
+        resp = mock.Mock(json=mock.Mock(return_value={}), raise_for_status=mock.Mock())
+        with mock.patch.object(trade.requests, "post", return_value=resp) as post:
+            engine.calculate_route_via_spansh("Apárctias", "Almadrava")
+        self.assertEqual(post.call_args.kwargs["data"]["starting_capital"], 59_538_834)
+
+
+class TestCreditsFromJournal(unittest.TestCase):
+    def test_loadgame_and_trades(self):
+        from edtrade.watcher import JournalWatcher
+        from pathlib import Path
+        w = JournalWatcher(journal_dir=Path("/nonexistent"))
+        w._dispatch([{"event": "MarketBuy", "TotalCost": 5}])
+        self.assertIsNone(w.credits)
+        w._dispatch([{"event": "LoadGame", "Credits": 1_000_000},
+                     {"event": "MarketBuy", "TotalCost": 300_000},
+                     {"event": "MarketSell", "TotalSale": 450_000}])
+        self.assertEqual(w.credits, 1_150_000)

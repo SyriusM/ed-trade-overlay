@@ -698,8 +698,22 @@ class JourneyPlan:
 
 
 @dataclass
+class HopCommodity:
+    """Jeden towar z ładunku hopu — Spansh dopełnia ładownię kilkoma towarami."""
+    name: str = ""
+    amount: int = 0
+    buy_price: int = 0
+    sell_price: int = 0
+    profit: int = 0
+
+
+@dataclass
 class Hop:
-    """Jeden hop (skok) w trasie wieloetapowej."""
+    """Jeden hop (skok) w trasie wieloetapowej.
+
+    commodity/buy_price/sell_price to towar dający największy zysk; amount i profit liczą cały ładunek
+    (wszystkie towary z `commodities`).
+    """
     source_system: str = ""
     source_station: str = ""
     destination_system: str = ""
@@ -710,6 +724,17 @@ class Hop:
     sell_price: int = 0
     profit: int = 0
     distance: float = 0.0
+    commodities: list = field(default_factory=list)  # HopCommodity, od największego zysku
+
+    @property
+    def names(self) -> list[str]:
+        return [c.name for c in self.commodities] or ([self.commodity] if self.commodity else [])
+
+    def cargo_text(self, limit: int = 2) -> str:
+        """Krótki opis ładunku: 'Gold ×400' albo 'Cobalt ×140 + Polymers ×172 +2' (reszta jako licznik)."""
+        items = self.commodities or ([HopCommodity(self.commodity, self.amount)] if self.commodity else [])
+        text = " + ".join(f"{c.name} ×{c.amount}" for c in items[:limit])
+        return text + (f" +{len(items) - limit}" if len(items) > limit else "")
 
 
 @dataclass
@@ -748,9 +773,10 @@ class TradeRoute:
             lines = [f"{self.source_system}/{self.source_station} → {self.destination_system} ({self.hops} hop{'y' if self.hops != 1 else ''})"]
             for i, hop in enumerate(self.hops_list):
                 lines.append(f"  Hop {i + 1}: {hop.source_station} → {hop.destination_station}")
-                if hop.commodity:
+                for c in hop.commodities or ([HopCommodity(hop.commodity, hop.amount, hop.buy_price, hop.sell_price,
+                                                            hop.profit)] if hop.commodity else []):
                     lines.append(
-                        f"    {hop.commodity} x{hop.amount} @ {hop.buy_price:,} → {hop.sell_price:,} (zysk {hop.profit:,})"
+                        f"    {c.name} x{c.amount} @ {c.buy_price:,} → {c.sell_price:,} (zysk {c.profit:,})"
                     )
                 dist = f" {hop.distance:.1f} ly" if hop.distance else ""
                 lines[-1] += dist
@@ -914,6 +940,11 @@ def ship_needs_large_pad(ship: str) -> bool:
     return (ship or "").lower() in LARGE_PAD_SHIPS
 
 
+# Kapitał, gdy saldo gracza nieznane — ograniczeniem ma być ładownia, nie kredyty.
+# (Stare domyślne 100 000 cr starczało na 2 t złota, więc trasa kończyła się na "Gold ×2".)
+UNLIMITED_CAPITAL = 10_000_000_000
+
+
 class TradeEngine:
     """Wywołuje Trade Dangerous i parsuje wynik."""
 
@@ -922,19 +953,23 @@ class TradeEngine:
         td_dir: Optional[Path] = None,
         td_venv: Optional[Path] = None,
         capacity: float = 304.0,
-        credits: int = 100_000,
+        credits: Optional[int] = None,
         ly_per: float = 32.0,
     ):
         self.td_dir = td_dir or DEFAULT_TD_DIR
         self.py_path = str((self.td_dir / td_venv).resolve()) if td_venv else "python3"
         self.trade_script = str((self.td_dir / "trade.py").resolve())
         self.capacity = capacity
-        self.credits = credits
+        self.credits = credits  # saldo gracza; None/0 = nieznane → UNLIMITED_CAPITAL
         self.ly_per = ly_per
         self.requires_large_pad = False
         self.max_star_ls = 5000.0  # 0 = bez limitu
         self._last_result: Optional[TradeRoute] = None
         self._polling_callback: Optional[Callable[[int], None]] = None
+
+    @property
+    def capital(self) -> int:
+        return int(self.credits) if self.credits and self.credits > 0 else UNLIMITED_CAPITAL
 
     def set_polling_callback(self, callback: Optional[Callable[[int], None]]) -> None:
         """Ustaw funkcję wywoływaną co 30s podczas pollingu Spansh."""
@@ -964,7 +999,7 @@ class TradeEngine:
             "--capacity",
             str(cap),
             "--credits",
-            str(self.credits),
+            str(self.capital),
             "--ly-per",
             str(ly),
             "--routes",
@@ -1116,7 +1151,7 @@ class TradeEngine:
         payload = {
             "system": system,
             "station": station,
-            "starting_capital": self.credits,
+            "starting_capital": self.capital,
             "max_cargo": int(cap),
             "max_hops": max_hops,
             "max_hop_distance": ly,
@@ -1385,25 +1420,30 @@ class TradeEngine:
             logger.debug("Hop %d: dest=%s/%s id64=%s", len(route.hops_list),
                          dst.get("system","?"), dst.get("station","?"), hop._destination_id64)
 
-            if comms:
-                c = comms[0]
-                hop.commodity = c.get("name", "")
-                hop.amount = c.get("amount", 0)
-                hop.buy_price = c.get("source_commodity", {}).get("buy_price", 0)
-                hop.sell_price = c.get("destination_commodity", {}).get("sell_price", 0)
-                hop.profit = c.get("total_profit", 0)
+            # Spansh dopełnia ładownię kilkoma towarami (np. 1 t srebra + 140 t kobaltu) — liczy się cały ładunek
+            hop.commodities = sorted(
+                (HopCommodity(name=c.get("name", ""), amount=c.get("amount", 0),
+                              buy_price=c.get("source_commodity", {}).get("buy_price", 0),
+                              sell_price=c.get("destination_commodity", {}).get("sell_price", 0),
+                              profit=c.get("total_profit", 0)) for c in comms),
+                key=lambda c: c.profit, reverse=True)
+            if hop.commodities:
+                main = hop.commodities[0]
+                hop.commodity, hop.buy_price, hop.sell_price = main.name, main.buy_price, main.sell_price
+                hop.amount = sum(c.amount for c in hop.commodities)
+                hop.profit = sum(c.profit for c in hop.commodities)
 
             route.hops_list.append(hop)
 
         route.hops = num_hops
         route.jumps = num_hops
-        route.cargo_used = results[0].get("commodities", [{}])[0].get("amount", 0)
+        route.cargo_used = route.hops_list[0].amount if route.hops_list else 0
 
         # Ustawiamy pola legacy (pierwszy hop)
         if route.hops_list:
             f = route.hops_list[0]
             route.buy_item = f.commodity
-            route.buy_quantity = f.amount
+            route.buy_quantity = f.commodities[0].amount if f.commodities else f.amount
             route.buy_price = f.buy_price
             route.sell_price = f.sell_price
             route.total_profit = route.hops_list[-1].profit if len(route.hops_list) == 1 else route.total_profit
