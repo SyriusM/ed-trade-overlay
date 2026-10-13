@@ -3,6 +3,7 @@
 Plik JSON w ~/.config/ed-trade-overlay/config.json. Puste pole ("") = automat wyłączony.
 Klucz game_window_class = klasa okna gry (kdotool), domyślnie appid Elite Dangerous — niezweryfikowana, odczytaj z logu "Aktywne okno: class=" gdy gra ma fokus.
 Klucz bar_only_when_game_focused = czy pasek ma być widoczny tylko, gdy okno gry ma fokus (domyślnie False, włączyć dopiero po zweryfikowaniu game_window_class).
+Klucze min_profit_per_t / max_data_age_days = minimalny zysk na tonę i maks. wiek cen (handel w okolicy, Towary, Mining).
 Klucze pad_filter (auto/large/all) / max_star_distance_ls (0 = bez limitu) / market_type (all/space/planetary) = filtry rynków (jak "Market minimum pad size" w TCE).
 Klucze bar_alpha / bar_font_scale / panel_font_scale = wygląd (CONTROL jak w TCE): przezroczystość paska i skale czcionek.
 """
@@ -30,6 +31,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
     'pad_filter': 'auto',
     'max_star_distance_ls': 5000,
     'market_type': 'all',
+    'min_profit_per_t': 500,
+    'max_data_age_days': 7,
+    'panel_geometry': '1100x700',
+    'panel_page': 'Trasa',
+    'verdict_icons': True,    # ocena okazji: ikonki (= ≈ ▲ ▲▲ ▼ ▼▼)
+    'verdict_labels': True,   # ocena okazji: opis (OPTIMAL, VERY SAFE…)
+    'auto_copy_system': True, # nowa trasa / następny hop → cel do schowka
+    'eddn_enabled': True,     # nasłuch cen na żywo z EDDN (wymaga pakietu pyzmq)
+    'security_weight': 0.5,      # low-sec / anarchia: waga ryzyka w ocenie i rankingu (0 = ignoruj)
+    'avoid_low_security': False, # całkiem pomijaj stacje w systemach Low / Anarchy
+    'risk_profile': 'auto',     # 'auto' / 'safe' / 'optimal' / 'risky' — jak program wybiera okazje i trasy
+    'copy_target': 'station', # co kopiować: 'station', 'system' albo 'both' ("Stacja (System)")
 }
 
 
