@@ -8,22 +8,16 @@ top bar spanning the full screen width. Uses Tkinter with overrideredirect,
 import logging
 import threading
 import tkinter as tk
-from tkinter import font as tkfont
 from typing import Optional, Callable
 
+from . import tce_theme as tce
 from .trade import TradeRoute
 
 logger = logging.getLogger(__name__)
 
-# Konfiguracja okna — górny pasek pełnej szerokości
-WINDOW_HEIGHT = 90
+# Górny pasek pełnej szerokości w układzie MAIN UI z TCE: POZYCJA | status trasy | CEL
+WINDOW_HEIGHT = 84
 MARGIN = 8
-BG_COLOR = "#1a1a2e"
-TEXT_COLOR = "#e0e0e0"
-ACCENT_COLOR = "#00d4ff"
-HIGHLIGHT_COLOR = "#ffd700"
-DIM_COLOR = "#888899"
-FONT_FAMILY = "monospace"
 
 
 class TradeOverlay:
@@ -57,7 +51,7 @@ class TradeOverlay:
         self.master.overrideredirect(True)
         self.master.wm_attributes("-type", "splash")
 
-        self.master.configure(bg="#1a1a2e")
+        self.master.configure(bg=tce.BG)
         self.master.attributes("-alpha", 0.75)
 
         # Rozmiar i pozycja — górny pasek pełnej szerokości
@@ -66,90 +60,79 @@ class TradeOverlay:
         # Zablokuj zmianę rozmiaru
         self.master.resizable(False, False)
 
-    def _apply_geometry(self):
-        """Ustaw geometrię: pełna szerokość ekranu, mała wysokość u góry."""
+    def _apply_geometry(self, scale: float = 1.0):
+        """Ustaw geometrię: pełna szerokość ekranu, mała wysokość u góry (rośnie ze skalą czcionki)."""
         width = self.master.winfo_screenwidth()
-        self.master.geometry(f"{width}x{WINDOW_HEIGHT}+0+0")
+        self.master.geometry(f"{width}x{round(WINDOW_HEIGHT * scale)}+0+0")
+
+    def apply_appearance(self, alpha: float, font_scale: float) -> None:
+        """CONTROL jak w TCE: przezroczystość i skala czcionki paska (wołane w wątku Tk)."""
+        self.master.attributes("-alpha", min(1.0, max(0.2, alpha)))
+        self.fonts.set_scale(font_scale)
+        self._apply_geometry(font_scale)
 
     def _setup_fonts(self):
-        """Czcionki — monospace, kompaktowe dla górnego paska (50px)."""
-        self.font_title = tkfont.Font(family=FONT_FAMILY, size=11, weight="bold")
-        self.font_info = tkfont.Font(family="monospace", size=10, weight="normal")
-        self.font_highlight = tkfont.Font(family="monospace", size=11, weight="bold")
-        self.font_small = tkfont.Font(family="monospace", size=9)
+        fonts = tce.Fonts(self.master)
+        self.fonts = fonts
+        self.font_tab = fonts.tab
+        self.font_title = fonts.big
+        self.font_highlight = fonts.section
+        self.font_info = fonts.body_bold
+        self.font_small = fonts.body
+
+    def _display(self, parent: tk.Misc, title: str) -> tk.Frame:
+        """Wyświetlacz jak w TCE: pomarańczowa zakładka z nazwą + brązowe pole treści."""
+        box = tk.Frame(parent, bg=tce.BG, highlightthickness=1, highlightbackground=tce.ORANGE_DIM)
+        tk.Label(box, text=title, font=self.font_tab, fg=tce.TEXT_ON_ORANGE, bg=tce.ORANGE,
+                 padx=12).pack(side=tk.TOP, anchor="w")
+        box.content = tk.Frame(box, bg=tce.ROW_BG)
+        box.content.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        return box
 
     def _build_ui(self):
-        """Buduje interfejs overlaya — górny wiersz (nagłówek + info + status) + dolny wiersz (trasa)."""
-        self.frame = tk.Frame(
-            self.master,
-            bg=BG_COLOR,
-            highlightthickness=0,
-            bd=0,
-        )
-        self.frame.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
+        self.frame = tk.Frame(self.master, bg=tce.BG, highlightthickness=0, bd=0)
+        self.frame.pack(fill=tk.BOTH, expand=True)
+        tk.Frame(self.frame, bg=tce.ORANGE, height=2).pack(side=tk.BOTTOM, fill=tk.X)
+        body = tk.Frame(self.frame, bg=tce.BG)
+        body.pack(fill=tk.BOTH, expand=True)
+        body.columnconfigure(0, weight=3, uniform="ui")
+        body.columnconfigure(1, weight=2, uniform="ui")
+        body.columnconfigure(2, weight=3, uniform="ui")
+        body.rowconfigure(0, weight=1)
 
-        # Górny wiersz: nagłówek + system/stacje (lewo) + status (prawo)
-        self.top_row = tk.Frame(self.frame, bg=BG_COLOR, highlightthickness=0, bd=0)
-        self.top_row.pack(side=tk.TOP, fill=tk.X, expand=False, padx=0, pady=0)
+        left = self._display(body, "POZYCJA")
+        left.grid(row=0, column=0, sticky="nsew", padx=(MARGIN, 6), pady=(4, 4))
+        self.system_info_label = tk.Label(left.content, text="", font=self.font_info, fg=tce.ORANGE,
+                                          bg=tce.ROW_BG, anchor="w", justify=tk.LEFT)
+        self.system_info_label.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
 
-        self.header = tk.Label(
-            self.top_row,
-            text='ED TRADE',
-            font=self.font_title,
-            fg=ACCENT_COLOR,
-            bg=BG_COLOR,
-            anchor='w',
-        )
-        self.header.pack(side=tk.LEFT, fill=tk.NONE, expand=False,
-                         padx=(MARGIN, MARGIN), pady=0)
+        center = tk.Frame(body, bg=tce.BG)
+        center.grid(row=0, column=1, sticky="nsew")
+        self.header = tk.Label(center, text="ED TRADE", font=self.font_tab, fg=tce.TEXT_ON_ORANGE,
+                               bg=tce.ORANGE, padx=30)
+        self.header.pack(side=tk.TOP)
+        self.status_label = tk.Label(center, text="OCZEKIWANIE NA DOKOWANIE", font=self.font_title,
+                                     fg=tce.ORANGE_DIM, bg=tce.BG)
+        self.status_label.pack(side=tk.TOP, pady=(2, 0))
+        self.steps_label = tk.Label(center, text="", font=self.font_info, fg=tce.ORANGE, bg=tce.BG)
+        self.steps_label.pack(side=tk.TOP)
 
-        self.system_info_label = tk.Label(
-            self.top_row,
-            text='',
-            font=self.font_small,
-            fg=DIM_COLOR,
-            bg=BG_COLOR,
-            anchor='w',
-        )
-        self.system_info_label.pack(side=tk.LEFT, fill=tk.X, expand=True,
-                                    padx=(0, MARGIN), pady=0)
+        right = self._display(body, "CEL")
+        right.grid(row=0, column=2, sticky="nsew", padx=(6, MARGIN), pady=(4, 4))
+        self.dest_label = tk.Label(right.content, text="", font=self.font_highlight, fg=tce.TEXT_WHITE,
+                                   bg=tce.ROW_BG, anchor="w")
+        self.dest_label.pack(fill=tk.X, padx=8, pady=(3, 0))
+        self.route_label = tk.Label(right.content, text="", font=self.font_info, fg=tce.ORANGE,
+                                    bg=tce.ROW_BG, anchor="w")
+        self.route_label.pack(fill=tk.X, padx=8, pady=(0, 3))
 
-        self.status_label = tk.Label(
-            self.top_row,
-            text='Oczekiwanie na Docked...',
-            font=self.font_small,
-            fg=DIM_COLOR,
-            bg=BG_COLOR,
-            anchor='e',
-        )
-        self.status_label.pack(side=tk.RIGHT, fill=tk.NONE, expand=False,
-                               padx=(0, MARGIN), pady=0)
-
-        # Separator poziomy między wierszami
-        self.hsep = tk.Frame(self.frame, height=1, bg='#333355', highlightthickness=0)
-        self.hsep.pack(side=tk.TOP, fill=tk.X, expand=False, padx=0, pady=0)
-
-        # Dolny wiersz: trasa, pełna szerokość
-        self.bottom_row = tk.Frame(self.frame, bg=BG_COLOR, highlightthickness=0, bd=0)
-        self.bottom_row.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=0, pady=0)
-
-        self.route_label = tk.Label(
-            self.bottom_row,
-            text='',
-            font=self.font_highlight,
-            fg=TEXT_COLOR,
-            bg=BG_COLOR,
-            anchor='center',
-        )
-        self.route_label.pack(side=tk.LEFT, fill=tk.BOTH, expand=True,
-                              padx=MARGIN, pady=0)
-
-        # Ukryj zawartość na start
         self._hide_content()
 
     def _hide_content(self):
-        """Ukryj wszystkie elementy treści."""
-        self.route_label.config(text="", fg=TEXT_COLOR)
+        """Wyczyść wyświetlacz celu i checklistę."""
+        self.dest_label.config(text="")
+        self.route_label.config(text="", fg=tce.ORANGE)
+        self.steps_label.config(text="")
 
     def update_route(self, route: TradeRoute):
         """Aktualizuj overlay z nową trasą — thread-safe (wołane z wątku watchera)."""
@@ -188,7 +171,7 @@ class TradeOverlay:
 
         if self.current_route is None:
             self._hide_content()
-            self.status_label.config(text="Oczekiwanie na Docked...", fg=DIM_COLOR)
+            self.status_label.config(text="OCZEKIWANIE NA DOKOWANIE", fg=tce.ORANGE_DIM)
             return
 
         route = self.current_route
@@ -198,17 +181,15 @@ class TradeOverlay:
 
         if route.error:
             self._hide_content()
-            self.route_label.config(text="Błąd kalkulacji", fg="#ff6b6b")
-            self.status_label.config(text="Błąd", fg="#ff6b6b")
+            self.route_label.config(text=f"BŁĄD: {route.error}".upper(), fg=tce.RED)
+            self.status_label.config(text="BŁĄD TRASY", fg=tce.RED)
             return
 
         # Pojedynczy wiersz trasy — wyśrodkowany
         # Dodajemy: licznik hopów, skoki FSD, świeżość danych, cargo awareness
         hop_num = getattr(route, '_current_hop', 1)
-        hop_info = ""
-        if route.hops_list and route.hops > 1:
-            # Multi-hop route
-            hop_info = f" Hop {hop_num}/{route.hops}"
+        hop_info = f"HOP {hop_num}/{route.hops}" if route.hops_list and route.hops > 1 else ""
+        steps = getattr(route, '_checklist_text', '')
 
         # Dane do wyświetlenia — AKTUALNY hop, nie zawsze hop 1 (bug: route.buy_item
         # itp. to zawsze pierwszy hop, a route.destination_system to KONIEC całej
@@ -229,50 +210,37 @@ class TradeOverlay:
             display_buy = route.buy_price
             display_sell = route.sell_price
 
-        fsd_jumps_info = ""
+        extras = []
         if route.jumps > 0:
-            fsd_jumps_info = f" · {route.jumps} skoki"
-        
-        freshness_info = ""
-        if hasattr(route, '_market_freshness_ts') and route._market_freshness_ts:
+            extras.append(f"{route.jumps} SKOKI")
+        if getattr(route, '_market_freshness_ts', None):
             import time
             elapsed = int(time.time() - route._market_freshness_ts)
-            if elapsed < 60:
-                freshness_info = f" ({elapsed}s temu)"
-            elif elapsed < 3600:
-                freshness_info = f" ({elapsed//60}m temu)"
-            else:
-                freshness_info = f" ({elapsed//3600}h temu)"
-        
-        # Cargo awareness — ostrzeżenie jeśli cargo się nie zgadza
-        cargo_warning = ""
-        if self._player_cargo and display_item and display_qty:
-            # Sprawdź czy gracz ma towar inny niż sugerowana trasa
-            has_other_cargo = any(
-                item.get('Name', '').lower() != display_item.lower()
-                and item.get('Count', 0) > 0
-                for item in self._player_cargo
-            )
-            if has_other_cargo:
-                other_items = [f"{i['Name']} x{i['Count']}" for i in self._player_cargo if i.get('Count', 0) > 0]
-                cargo_warning = f" [Masz: {', '.join(other_items)}]"
-        
-        route_text = (
-            f"-> {display_dest_system} "
-            f"[{display_dest_station}]{hop_info}{fsd_jumps_info} "
-            f"{display_item} x{display_qty} "
-            f"@ {display_buy:,}cr "
-            f"--> {display_sell:,}cr "
-            f"| Zysk: {route.total_profit:,}cr{cargo_warning}"
-        )
-        if freshness_info:
-            route_text += f" {freshness_info}"
+            extras.append(f"{elapsed}s temu" if elapsed < 60 else
+                          f"{elapsed // 60}m temu" if elapsed < 3600 else f"{elapsed // 3600}h temu")
         if getattr(route, '_scoopable', False):
-            route_text += " ⛽"
-        profit_color = "#00ff88" if route.total_profit > 0 else "#ff6b6b"
-        self.route_label.config(text=route_text, fg=profit_color)
-        self.status_label.config(text="Trasa obliczona", fg="#00ff88")
-        logger.debug("refresh(): status_label set to 'Trasa obliczona'")
+            extras.append("⛽")
+
+        # Cargo awareness — ostrzeżenie jeśli w ładowni jest coś innego niż towar hopu
+        if self._player_cargo and display_item and display_qty:
+            def norm(name: str) -> str:
+                return "".join(ch for ch in name.lower() if ch.isalnum())
+            other_items = [f"{i.get('Name_Localised') or i['Name']} x{i['Count']}" for i in self._player_cargo
+                           if norm(display_item) not in (norm(i.get('Name', '')), norm(i.get('Name_Localised', '')))
+                           and i.get('Count', 0) > 0 and i.get('Name', '').lower() != 'drones'
+                           and not i.get('MissionID')]
+            if other_items:
+                extras.append(f"[MASZ: {', '.join(other_items)}]")
+
+        self.dest_label.config(text=f"{display_dest_system} · {display_dest_station}".upper())
+        route_text = (f"{display_item} ×{display_qty}  {display_buy:,} → {display_sell:,} CR"
+                      f"  ·  ZYSK {route.total_profit:,} CR")
+        if extras:
+            route_text += "  ·  " + "  ".join(extras)
+        self.route_label.config(text=route_text.upper(), fg=tce.GREEN if route.total_profit > 0 else tce.RED)
+        self.steps_label.config(text="  ".join(t for t in (hop_info, steps.upper()) if t))
+        finished = "ukończona" in steps
+        self.status_label.config(text="TRASA UKOŃCZONA" if finished else "TRASA AKTYWNA", fg=tce.GREEN)
 
     def set_polling_status(self, elapsed: int) -> None:
         """Aktualizuj status w czasie pollingu Spansh — thread-safe."""
@@ -288,10 +256,7 @@ class TradeOverlay:
 
     def _set_polling_status_inner(self, elapsed: int) -> None:
         """Wywoływane z mainloop — aktualizuje status bez zmiany current_route."""
-        self.status_label.config(
-            text=f"Liczenie trasy... ({elapsed}s)",
-            fg=ACCENT_COLOR,
-        )
+        self.status_label.config(text=f"LICZĘ TRASĘ… {elapsed}s", fg=tce.ORANGE)
 
     def set_system_info(self, text: str) -> None:
         """Ustaw info o systemie/stacjach — thread-safe. Rejestruje też jako strona rotacji."""
@@ -301,7 +266,7 @@ class TradeOverlay:
         """Wywoływane z mainloop — aktualizuje system_info_text i rejestruje stronę 'system'."""
         self._system_info_text = text
         self.register_page('system', lambda: self._system_info_text)
-        self.system_info_label.config(text=text)
+        self.system_info_label.config(text=text.upper())
 
     def register_page(self, name: str, getter) -> None:
         """Zarejestruj/zaktualizuj stronę rotacji paska (name unikalny, getter: () -> str)."""
@@ -317,7 +282,7 @@ class TradeOverlay:
             self._page_index = (self._page_index + 1) % len(self._pages)
             name, getter = self._pages[self._page_index]
             try:
-                self.system_info_label.config(text=getter())
+                self.system_info_label.config(text=getter().upper())
             except Exception:
                 logger.exception('Błąd rotacji strony %s', name)
         self.master.after(8000, self._rotate_pages)

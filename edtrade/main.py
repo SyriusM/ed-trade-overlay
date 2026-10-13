@@ -14,13 +14,16 @@ import time
 from pathlib import Path
 
 from .watcher import JournalWatcher
-from .trade import TradeEngine
+from .filters import filter_from_config
+from .trade import (TradeEngine, ship_needs_large_pad, get_system_info, search_stations, find_material_traders,
+                    find_mining_hotspots, find_mineral_buyers)
 from .overlay import TradeOverlay
 from .panel import TradePanel
 from .window_watch import get_active_window
 from . import market_cache
 from .market_cache import init_market_cache
 from . import config as user_config_module
+from .checklist import RouteChecklist, load_commodity_names
 from typing import Optional
 
 logger = logging.getLogger("edto")
@@ -116,10 +119,14 @@ class EDTradeOverlayApp:
         self._show_overlay = not args.no_overlay
         self.user_config = user_config_module.load_user_config()
         self.overlay = TradeOverlay() if self._show_overlay else None
+        if self.overlay is not None:
+            self.overlay.apply_appearance(float(self.user_config.get('bar_alpha', 0.75)),
+                                          float(self.user_config.get('bar_font_scale', 1.0)))
         self.panel = None
         if self.overlay is not None and not args.no_panel:
             try:
-                self.panel = TradePanel(self.overlay.master, user_config=self.user_config)
+                self.panel = TradePanel(self.overlay.master, user_config=self.user_config,
+                                        on_appearance_change=self.overlay.apply_appearance)
                 logger.info("TradePanel utworzony (zakładki: System/Materiały/Mining/Journey)")
             except Exception:
                 logger.exception("Nie udało się utworzyć TradePanel")
@@ -131,8 +138,9 @@ class EDTradeOverlayApp:
             on_docked=self._on_docked,
             on_loadout=self._on_loadout,
             on_cargo=self._on_cargo,
-            on_location=self._on_location,
             on_market=self._on_market,
+            on_materials=self._on_materials,
+            on_trade=self._on_trade,
         )
         self._dock_count = 0
         self._last_system = ""
@@ -140,6 +148,10 @@ class EDTradeOverlayApp:
         self._last_capacity = 0.
         self._last_active_class: Optional[str] = None
         self._bar_visible: bool = True
+        self.checklist: Optional[RouteChecklist] = None
+        self._commodity_names: dict[str, str] = {}
+        self._cargo: list[dict] = []
+        self._ship_large_pad = False
 
         # Podłącz callback pollingu do overlaya
         if self.overlay:
@@ -164,9 +176,17 @@ class EDTradeOverlayApp:
             self.trade_engine.capacity = capacity
         if max_jump_range > 0:
             self.trade_engine.ly_per = max_jump_range
+        self._ship_large_pad = ship_needs_large_pad(ship)
+        was_large = self.trade_engine.requires_large_pad
+        self._apply_market_filter()
+        pad_changed = was_large != self.trade_engine.requires_large_pad
+        logger.info("Loadout: %s — trasy tylko przez stacje z padem L: %s", ship, self.trade_engine.requires_large_pad)
+        if self.panel is not None:
+            self.panel.update_context(ship=ship, capacity=capacity, jump_range=max_jump_range,
+                                      ship_large_pad=self._ship_large_pad)
 
-        # Sprawdź, czy capacity faktycznie się zmieniła
-        if capacity <= 0 or capacity == self._last_capacity:
+        # Przelicz, gdy zmieniła się pojemność albo wymagany pad (zmiana statku)
+        if capacity <= 0 or (capacity == self._last_capacity and not pad_changed):
             return
 
         # Sprawdź, czy użytkownik jest nadal w tej samej stacji
@@ -186,39 +206,62 @@ class EDTradeOverlayApp:
         if route.error:
             logger.error("Błąd przeliczenia trasy po Loadout: %s", route.error)
 
-        if self.overlay:
-            self.overlay.update_route(route)
+        self._publish_route(route, system, station)
         logger.info("Trasa po Loadout: %s", route.summary())
         self._last_capacity = capacity
 
     def _on_cargo(self, event: dict):
         """Reaguje na event Cargo — przesyła listę towarów do overlaya."""
+        self._cargo = event.get("Inventory") or []
         if self.overlay:
-            cargo_list = event.get("Cargo", [])
-            self.overlay.set_player_cargo(cargo_list)
-            logger.debug("Cargo event: %d pozycji", len(cargo_list))
+            self.overlay.set_player_cargo(self._cargo)
+        if self.panel is not None:
+            self.panel.update_context(cargo=self._cargo)
+        logger.debug("Cargo: %d pozycji", len(self._cargo))
 
-    def _on_location(self, event: dict):
-        """Reaguje na event Location — inkrementuje _current_hop gdy gracz
-        dotrze do kolejnego hopu trasy."""
-        system = event.get("StarSystem", "")
-        if not system or not self.overlay or not self.overlay.current_route:
+    def _apply_market_filter(self):
+        """Filtry z configu (Ustawienia mogą je zmienić w trakcie) + rozmiar statku → parametry trasy."""
+        market_filter = filter_from_config(self.user_config, self._ship_large_pad)
+        self.trade_engine.requires_large_pad = market_filter.requires_large_pad
+        self.trade_engine.max_star_ls = market_filter.max_star_ls
+        return market_filter
+
+    def _publish_route(self, route, system: str, station: str) -> None:
+        """Nowa trasa → nowa checklista (kup → leć → sprzedaj) i wysłanie do overlaya."""
+        self.checklist = None
+        if not route.error and route.hops_list:
+            if not self._commodity_names:
+                self._commodity_names = load_commodity_names()
+            self.checklist = RouteChecklist(
+                route, self._commodity_names,
+                cargo=self._cargo or self.watcher._player_cargo,
+                docked=(system, station),
+            )
+            logger.info("Checklista: %s", self.checklist.status_text())
+        if self.overlay:
+            self.overlay.update_route(route)
+        if self.panel is not None:
+            self.panel.show_route(route)
+
+    def _feed_checklist(self, event: dict) -> None:
+        if self.checklist is None or not self.checklist.on_event(event):
             return
+        logger.info("Checklista: hop %d/%d %s", self.checklist.hop_index + 1,
+                    len(self.checklist.hops), self.checklist.status_text())
+        if self.overlay:
+            self.overlay._refresh_now()
+        if self.panel is not None:
+            self.panel.show_route(self.checklist.route)
 
-        route = self.overlay.current_route
-        # Sprawdź czy system to kolejny hop
-        if route.hops_list:
-            next_hop_num = getattr(route, '_current_hop', 1)
-            if next_hop_num < len(route.hops_list):
-                next_hop = route.hops_list[next_hop_num]
-                if next_hop.destination_system == system:
-                    route._current_hop = next_hop_num + 1
-                    logger.info(
-                        "Hop advanced: %d → %d (system=%s)",
-                        next_hop_num, next_hop_num + 1, system,
-                    )
-                    # wymuś natychmiastowe odświeżenie overlaya
-                    self.overlay._refresh_now()
+    def _on_trade(self, event: dict):
+        """MarketBuy/MarketSell — odhaczanie kroków; po ukończeniu trasy od razu następna z bieżącej stacji."""
+        was_finished = self.checklist is None or self.checklist.finished
+        self._feed_checklist(event)
+        if not was_finished and self.checklist.finished and "/" in self._last_system:
+            system, station = self._last_system.split("/", 1)
+            logger.info("Trasa ukończona — liczę następną z %s/%s", system, station)
+            self._last_system = ""
+            self._on_docked({"StarSystem": system, "StationName": station})
 
     def _on_docked(self, event: dict):
         """Reaguje na event Docked — wylicza najlepszą trasę."""
@@ -229,6 +272,11 @@ class EDTradeOverlayApp:
             logger.warning("Docked bez system/stacja: %s", event)
             return
 
+        self._feed_checklist(event)
+        following = self.checklist is not None and self.checklist.follows_plan(system, station)
+        if self.panel is not None:
+            self.panel.update_context(system=system, station=station)
+
         # Unikaj redundancyjnych wyliczeń — ten sam system/stacja
         key = f"{system}/{station}"
         if key == self._last_system:
@@ -238,23 +286,34 @@ class EDTradeOverlayApp:
         self._dock_count += 1
         logger.info("Docked #%d: %s/%s", self._dock_count, system, station)
 
-        # Wylicz trasę przez Spansh API (nie blokuje overlaya)
-        route = self.trade_engine.calculate_route_via_spansh(system, station)
+        # Panel: rynek bieżącej stacji od razu, przed długim liczeniem trasy w Spansh
+        if self.panel is not None:
+            try:
+                self.panel.show_docked_station(system, station)
+            except Exception:
+                logger.exception("Błąd przekazania stacji do panelu")
+
+        # Dokowanie w celu bieżącego hopu = gracz realizuje plan — nie nadpisujemy trasy
+        route = None
+        if following:
+            logger.info("Docked w celu hopu %d — trasa w toku, bez przeliczania", self.checklist.hop_index + 1)
+        else:
+            self._apply_market_filter()
+            route = self.trade_engine.calculate_route_via_spansh(system, station)
 
         # Pobierz info o systemie i stacjach
         try:
             system_id64 = str(event.get('SystemAddress', ''))
             info_parts = []
             if system_id64:
-                from .trade import get_system_info, search_stations
                 sys_info = get_system_info(system_id64)
                 if sys_info.name:
-                    info_parts.append(f'{sys_info.name} | {sys_info.allegiance} | sec:{sys_info.security}')
+                    info_parts.append(f'{sys_info.allegiance} | sec:{sys_info.security}')
             stations = search_stations(system)
             if stations:
                 info_parts.append(f'{len(stations)} stacji')
-            if info_parts and self.overlay:
-                self.overlay.set_system_info(' | '.join(info_parts))
+            if self.overlay:
+                self.overlay.set_system_info(f'{system} · {station}\n' + ' | '.join(info_parts))
         except Exception:
             logger.exception('Błąd automatu stacje/system przy Docked')
 
@@ -274,7 +333,6 @@ class EDTradeOverlayApp:
         try:
             material_kind = self.user_config.get('material_kind', '')
             if material_kind and self.overlay:
-                from .trade import find_material_traders
                 traders = find_material_traders(system, material_kind, max_ly=50, size=5)
                 if traders:
                     names = ', '.join(t.name for t in traders[:3])
@@ -287,7 +345,6 @@ class EDTradeOverlayApp:
         try:
             mineral = self.user_config.get('mining_mineral', '')
             if mineral and self.overlay:
-                from .trade import find_mining_hotspots, find_mineral_buyers
                 hotspots = find_mining_hotspots(system, mineral, max_ly=50, size=3)
                 buyers = find_mineral_buyers(mineral, system, max_ly=60, size=3)
                 parts = []
@@ -303,12 +360,12 @@ class EDTradeOverlayApp:
         except Exception:
             logger.exception('Błąd automatu mining przy Docked')
 
+        if route is None:
+            return
         if route.error:
             logger.error("Błąd kalkulacji: %s", route.error)
 
-        # Aktualizuj overlay
-        if self.overlay:
-            self.overlay.update_route(route)
+        self._publish_route(route, system, station)
         logger.info("Trasa: %s", route.summary())
 
         # Zapisz capacity użyte do obliczenia trasy
@@ -327,6 +384,11 @@ class EDTradeOverlayApp:
             )
         except Exception:
             logger.exception("Błąd w _on_market")
+
+    def _on_materials(self, event: dict):
+        """Reaguje na event Materials (start gry) — stan materiałów do zakładki Inżynieria."""
+        if self.panel is not None:
+            self.panel.set_materials(event)
 
     def _apply_bar_visibility(self, window_class: Optional[str]) -> None:
         """Gdy włączone bar_only_when_game_focused: pasek widoczny tylko, gdy aktywne okno ma klasę game_window_class."""

@@ -6,6 +6,7 @@ i parsuje wynik do struktury Python.
 
 import json
 import logging
+import math
 import re
 import subprocess
 import time
@@ -80,6 +81,7 @@ class MineralBuyer:
     distance: float = 0.0
     distance_to_arrival: float = 0.0
     updated_at: str = ""
+    station_type: str = ""
 
 
 @dataclass
@@ -93,6 +95,7 @@ class CommoditySeller:
     distance: float = 0.0
     distance_to_arrival: float = 0.0
     updated_at: str = ""
+    station_type: str = ""
 
 
 _ARDENT_COMMODITIES: list[dict] = []
@@ -321,6 +324,7 @@ def find_mineral_buyers(
             distance=distance,
             distance_to_arrival=dist_arrival,
             updated_at=b.get("updatedAt") or "",
+            station_type=b.get("stationType") or "",
         ))
 
     # Sortuj: sell_price malejąco
@@ -385,6 +389,7 @@ def find_commodity_sellers(
             distance=distance,
             distance_to_arrival=dist_arrival,
             updated_at=b.get("updatedAt") or "",
+            station_type=b.get("stationType") or "",
         ))
 
     # Sortuj: buy_price rosnąco, potem stock malejąco
@@ -467,6 +472,148 @@ def get_station_market(system_name: str, station_name: str) -> StationMarket:
     logger.info("get_station_market: %s/%s — %d exports, %d imports",
                 system_name, market.station_name, len(market.exports), len(market.imports))
     return market
+
+
+@dataclass
+class NearbyTrade:
+    """Jedna okazja: towar kupiony tutaj (albo już w ładowni) → najlepszy kupiec w okolicy."""
+    commodity: str = ""
+    buy_price: int = 0          # 0 = towar już w ładowni (cena nieznana)
+    stock: int = 0
+    units: int = 0              # realnie do sprzedania: min(ładownia/ilość, zapas, popyt)
+    sell_station: str = ""
+    sell_system: str = ""
+    sell_price: int = 0
+    demand: int = 0
+    distance: float = 0.0
+    distance_to_arrival: float = 0.0
+    pad_size: str = ""
+    station_type: str = ""
+    updated_at: str = ""
+    travel_s: float = 0.0       # szacowany czas dolotu i dokowania
+
+    @property
+    def profit_per_unit(self) -> int:
+        return self.sell_price - self.buy_price
+
+    @property
+    def total_profit(self) -> int:
+        return self.profit_per_unit * self.units
+
+    @property
+    def profit_per_hour(self) -> float:
+        return self.total_profit * 3600 / self.travel_s if self.travel_s else 0.0
+
+
+# Tryby rankingu handlu w okolicy (jak sortowanie zysku w Trade Advisor TCE + "czas to pieniądz")
+RANK_MODES = {
+    "total": "Największy zysk",
+    "per_hour": "Najszybszy zysk (cr/h)",
+    "time": "Najkrótsza droga",
+}
+
+
+def _rank_key(mode: str):
+    if mode == "total":
+        return lambda t: (t.total_profit, -t.travel_s)
+    if mode == "time":
+        return lambda t: (-t.travel_s, t.total_profit)
+    return lambda t: (t.profit_per_hour, t.total_profit)
+
+
+def candidate_trades(commodity: str, reference_system: str, units: int, buy_price: int, market_filter,
+                     max_ly: float = 40.0, exclude_market: str = "", jump_range: float = 30.0) -> list[NearbyTrade]:
+    """Wszyscy opłacalni kupcy w zasięgu (po filtrze) — wybór najlepszego zależy od trybu rankingu."""
+    trades = []
+    for b in find_mineral_buyers(commodity, reference_system, max_ly=max_ly, min_demand=1, size=100):
+        if not market_filter.accepts(b.pad_size, b.distance_to_arrival, b.station_type):
+            continue
+        if exclude_market and b.station_name.lower() == exclude_market.lower() and b.system_name.lower() == reference_system.lower():
+            continue
+        trade = NearbyTrade(commodity=commodity, buy_price=buy_price, units=min(units, b.demand),
+                            sell_station=b.station_name, sell_system=b.system_name, sell_price=b.sell_price,
+                            demand=b.demand, distance=b.distance, distance_to_arrival=b.distance_to_arrival,
+                            pad_size=b.pad_size, station_type=b.station_type, updated_at=b.updated_at,
+                            travel_s=travel_seconds(b.distance, b.distance_to_arrival, jump_range))
+        if trade.profit_per_unit > 0 and trade.units > 0:
+            trades.append(trade)
+    return trades
+
+
+def pick_best(candidates: list[NearbyTrade], mode: str = "per_hour") -> Optional[NearbyTrade]:
+    return max(candidates, key=_rank_key(mode)) if candidates else None
+
+
+def rank_trades(candidates_per_commodity: list[list[NearbyTrade]], mode: str = "per_hour") -> list[NearbyTrade]:
+    """Jeden wiersz na towar (najlepszy kupiec w danym trybie), posortowane wg trybu."""
+    best = [b for b in (pick_best(c, mode) for c in candidates_per_commodity) if b is not None]
+    best.sort(key=_rank_key(mode), reverse=True)
+    return best
+
+
+def best_buyer(commodity: str, reference_system: str, units: int, buy_price: int, market_filter,
+               max_ly: float = 40.0, exclude_market: str = "", jump_range: float = 30.0,
+               mode: str = "per_hour") -> Optional[NearbyTrade]:
+    return pick_best(candidate_trades(commodity, reference_system, units, buy_price, market_filter, max_ly,
+                                      exclude_market, jump_range), mode)
+
+
+JUMP_SECONDS = 50.0      # ładowanie FSD + skok + wyjście z hiperprzestrzeni
+DOCKING_SECONDS = 60.0   # podejście, pozwolenie, lądowanie
+
+
+def supercruise_seconds(distance_to_arrival_ls: float) -> float:
+    """Supercruise rośnie wolniej niż liniowo (przyspieszanie): ~40 s dla 10 ls, ~75 s dla 1000 ls, ~7 min dla 100k ls."""
+    return 35.0 + 13.0 * math.sqrt(max(distance_to_arrival_ls, 0.0) / 100.0)
+
+
+def travel_seconds(distance_ly: float, distance_to_arrival_ls: float, jump_range: float = 30.0) -> float:
+    """Przybliżony czas od odlotu do zadokowania u kupca — podstawa rankingu CR/H (czas to pieniądz)."""
+    jumps = 0 if distance_ly < 0.5 else math.ceil(distance_ly / max(jump_range, 5.0))
+    return JUMP_SECONDS * jumps + supercruise_seconds(distance_to_arrival_ls) + DOCKING_SECONDS
+
+
+def _parallel_candidates(jobs: list[dict], reference_system: str, market_filter, max_ly: float,
+                         exclude_market: str = "", workers: int = 6, jump_range: float = 30.0) -> list[list[NearbyTrade]]:
+    from concurrent.futures import ThreadPoolExecutor
+    _ardent_commodity_names()  # wspólna lista nazw — pobrana raz, zanim ruszą wątki
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(lambda j: candidate_trades(j["name"], reference_system, j["units"], j["buy_price"],
+                                                           market_filter, max_ly, exclude_market, jump_range), jobs))
+    for job, cands in zip(jobs, results):
+        for trade in cands:
+            trade.stock = job.get("stock", 0)
+    return [c for c in results if c]
+
+
+def nearby_candidates_from_market(market: "StationMarket", capacity: int, market_filter, max_ly: float = 40.0,
+                                  workers: int = 6, jump_range: float = 30.0) -> list[list[NearbyTrade]]:
+    """Trade Advisor: dla każdego towaru eksportowanego tutaj — wszyscy opłacalni kupcy w okolicy (pełna ładownia)."""
+    jobs = [{"name": i.name, "units": min(capacity, i.stock), "buy_price": i.buy_price, "stock": i.stock}
+            for i in market.exports if i.stock > 0 and i.buy_price > 0]
+    cands = _parallel_candidates(jobs, market.system_name, market_filter, max_ly, market.station_name, workers, jump_range)
+    logger.info("nearby_candidates_from_market: %s/%s — %d towarów z kupcem z %d",
+                market.system_name, market.station_name, len(cands), len(jobs))
+    return cands
+
+
+def cargo_candidates(cargo: list[dict], reference_system: str, market_filter, max_ly: float = 40.0,
+                     workers: int = 6, jump_range: float = 30.0) -> list[list[NearbyTrade]]:
+    """Ładunek z journala (Cargo: Name = symbol, Count) → kupcy w okolicy; pomija limpety i ładunek misyjny."""
+    jobs = [{"name": c.get("Name", ""), "units": int(c.get("Count") or 0), "buy_price": 0, "stock": int(c.get("Count") or 0)}
+            for c in cargo if c.get("Name") and int(c.get("Count") or 0) > 0 and c.get("Name", "").lower() != "drones"
+            and not c.get("MissionID")]
+    return _parallel_candidates(jobs, reference_system, market_filter, max_ly, workers=workers, jump_range=jump_range)
+
+
+def nearby_trades_from_market(market: "StationMarket", capacity: int, market_filter, max_ly: float = 40.0,
+                              workers: int = 6, jump_range: float = 30.0, mode: str = "per_hour") -> list[NearbyTrade]:
+    return rank_trades(nearby_candidates_from_market(market, capacity, market_filter, max_ly, workers, jump_range), mode)
+
+
+def best_sales_for_cargo(cargo: list[dict], reference_system: str, market_filter, max_ly: float = 40.0,
+                         workers: int = 6, jump_range: float = 30.0, mode: str = "per_hour") -> list[NearbyTrade]:
+    return rank_trades(cargo_candidates(cargo, reference_system, market_filter, max_ly, workers, jump_range), mode)
 
 
 SERVICE_FIELDS = (
@@ -756,6 +903,17 @@ def search_stations(system_name: str) -> list[StationInfo]:
     return stations
 
 
+# Symbole statków z eventu Loadout ("Ship"), które mieszczą się tylko na padzie L
+LARGE_PAD_SHIPS = frozenset({
+    "anaconda", "belugaliner", "cutter", "federation_corvette", "imperial_clipper", "orca",
+    "panthermkii", "type7", "type9", "type9_military",
+})
+
+
+def ship_needs_large_pad(ship: str) -> bool:
+    return (ship or "").lower() in LARGE_PAD_SHIPS
+
+
 class TradeEngine:
     """Wywołuje Trade Dangerous i parsuje wynik."""
 
@@ -773,6 +931,8 @@ class TradeEngine:
         self.capacity = capacity
         self.credits = credits
         self.ly_per = ly_per
+        self.requires_large_pad = False
+        self.max_star_ls = 5000.0  # 0 = bez limitu
         self._last_result: Optional[TradeRoute] = None
         self._polling_callback: Optional[Callable[[int], None]] = None
 
@@ -960,8 +1120,11 @@ class TradeEngine:
             "max_cargo": int(cap),
             "max_hops": max_hops,
             "max_hop_distance": ly,
-            "max_system_distance": ly,
+            # Odległość stacji od gwiazdy w LS (nie zasięg skoku w ly!) — wcześniej wpisywane ly ≈ 30 odcinało stacje >30 ls
+            "max_system_distance": int(self.max_star_ls) if self.max_star_ls else 10_000_000,
         }
+        if self.requires_large_pad:
+            payload["requires_large_pad"] = "1"
 
         headers_form = {
             "User-Agent": "EdTradeOverlay/0.1",

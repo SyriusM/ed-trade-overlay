@@ -191,3 +191,28 @@ class TestStationMarket(unittest.TestCase):
     def test_unknown_station_and_system(self):
         self.assertIn("Brak danych", self._run([], station="X").error)
         self.assertIn("nie znaleziony", self._run({}, status=404).error)
+
+
+class TestLargePad(unittest.TestCase):
+    """Anaconda (pad L) nie może dostać trasy przez outposty z padami S/M."""
+
+    def _payload(self, requires_large_pad: bool) -> dict:
+        from unittest import mock
+        from edtrade import trade
+        engine = trade.TradeEngine()
+        engine.requires_large_pad = requires_large_pad
+        resp = mock.Mock(json=mock.Mock(return_value={}), raise_for_status=mock.Mock())
+        with mock.patch.object(trade.requests, "post", return_value=resp) as post:
+            engine.calculate_route_via_spansh("NN 3009", "Plucker Camp")
+        return post.call_args.kwargs["data"]
+
+    def test_payload(self):
+        self.assertEqual(self._payload(True).get("requires_large_pad"), "1")
+        self.assertNotIn("requires_large_pad", self._payload(False))
+
+    def test_ship_sizes(self):
+        from edtrade.trade import ship_needs_large_pad
+        for ship in ("Anaconda", "anaconda", "type9", "cutter", "federation_corvette", "type7"):
+            self.assertTrue(ship_needs_large_pad(ship), ship)
+        for ship in ("python", "krait_mkii", "type6", "asp", "", None):
+            self.assertFalse(ship_needs_large_pad(ship), ship)
