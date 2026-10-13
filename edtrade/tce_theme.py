@@ -194,7 +194,10 @@ class DataTable(tk.Frame):
         self._sort_desc: dict[str, bool] = {}
         for key, title, width, anchor in columns:
             self.tree.heading(key, text=title.upper(), anchor=anchor, command=lambda k=key: self.sort_by(k))
-            self.tree.column(key, width=width, anchor=anchor, stretch=anchor == "w")
+            self.tree.column(key, width=width, minwidth=20, anchor=anchor, stretch=False)
+        self._base_widths = {c[0]: c[2] for c in columns}
+        # Treeview sam nie zwęża kolumn poniżej zadanej szerokości — przy 2 tabelach obok siebie wypadały poza krawędź
+        self.tree.bind("<Configure>", self._fit_columns)
         scroll = ttk.Scrollbar(self, orient=tk.VERTICAL, command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(4, 0), pady=4)
@@ -203,6 +206,11 @@ class DataTable(tk.Frame):
         self.tree.tag_configure("good", foreground=GREEN)
         self.tree.tag_configure("bad", foreground=RED)
         self._sort_values: dict[str, dict] = {}
+
+    def _fit_columns(self, event: tk.Event) -> None:
+        total = sum(self._base_widths.values())
+        for key, width in self._base_widths.items():
+            self.tree.column(key, width=max(20, int(width * event.width / total)))
 
     def set_rows(self, rows: Sequence[Sequence], sort_values: Optional[Sequence[dict]] = None,
                  tags: Optional[Sequence[str]] = None) -> None:

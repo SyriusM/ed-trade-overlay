@@ -15,7 +15,7 @@ from . import materials as mats
 from . import tce_theme as tce
 from .checklist import load_commodity_names
 from datetime import datetime, timezone
-from .trade import get_system_info, search_stations, find_material_traders, find_mining_hotspots, find_mineral_buyers, find_commodity_sellers, get_station_market, StationMarket, TradeEngine
+from .trade import get_system_info, search_stations, find_material_traders, find_mining_hotspots, find_mineral_buyers, find_commodity_sellers, get_station_market, StationMarket, JourneyPlan, TradeEngine
 
 COMMODITY_MODES = ('Kup', 'Sprzedaj')
 PANEL_TITLE = 'ED Trade Panel'
@@ -47,23 +47,6 @@ MATERIAL_HINTS = {
     'Manufactured': 'trader Manufactured / sygnały, wraki',
     'Encoded': 'trader Encoded / skanowanie',
 }
-
-
-def _format_engineering(bp, g_from: int, g_to: int, rolls: int, needs: list, status_line: str) -> list[str]:
-    """Tekst zakladki Inzynieria: braki (z podpowiedzia gdzie zdobyc), potem to co juz masz."""
-    lines = [f'{bp.label} — grade {g_from}→{g_to}, {rolls} roll(e) na grade', status_line, '']
-    missing = [n for n in needs if n.missing]
-    have = [n for n in needs if not n.missing]
-    lines.append(f'BRAKUJE ({len(missing)}):' if missing else 'Masz wszystko potrzebne.')
-    for n in missing:
-        grade = f' G{n.rarity}' if n.rarity else ''
-        lines.append(f'  ✗ {n.name} ({n.type}{grade}): potrzeba {n.need}, masz {n.have}, brakuje {n.missing}'
-                     f' — {MATERIAL_HINTS.get(n.type, "?")}')
-    if have:
-        lines += ['', f'MASZ ({len(have)}):']
-        for n in have:
-            lines.append(f'  ✓ {n.name}: {n.have}/{n.need}')
-    return lines
 
 
 class TradePanel:
@@ -101,10 +84,13 @@ class TradePanel:
         self.system_refresh_btn = ttk.Button(self.system_entry_frame, text='Odśwież', command=self.refresh_system_tab)
         self.system_refresh_btn.pack(side=tk.LEFT)
 
-        self.system_info_text = tk.Text(self.tab_system, height=20, width=80, wrap=tk.WORD)
-        self.system_info_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
-        self.system_info_text.insert('1.0', '(wpisz system i kliknij Odśwież)')
-        self.system_info_text.config(state=tk.DISABLED)
+        self.system_header = tce.SectionHeader(self.tab_system, 'Stacje w systemie', self.fonts)
+        self.system_header.pack(fill=tk.X, padx=10, pady=(8, 2))
+        self.system_table = tce.DataTable(self.tab_system, [
+            ('name', 'Stacja', 260, 'w'), ('type', 'Typ', 170, 'w'), ('pad', 'Pad', 80, 'center'),
+            ('arrival', 'Od gwiazdy', 110, 'e'), ('economy', 'Ekonomia', 150, 'w'), ('allegiance', 'Frakcja', 130, 'w')],
+            height=18)
+        self.system_table.pack(fill=tk.BOTH, expand=True, padx=10, pady=(2, 10))
 
         self.tab_materials = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_materials, text='Materiały')
@@ -120,10 +106,13 @@ class TradePanel:
         self.materials_btn = ttk.Button(self.materials_entry_frame, text='Odśwież', command=self.refresh_materials_tab)
         self.materials_btn.pack(side=tk.LEFT)
 
-        self.materials_text = tk.Text(self.tab_materials, height=20, width=80, wrap=tk.WORD)
-        self.materials_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
-        self.materials_text.insert('1.0', '(wybierz system i rodzaj, kliknij Odśwież)')
-        self.materials_text.config(state=tk.DISABLED)
+        self.materials_header = tce.SectionHeader(self.tab_materials, 'Handlarze materiałów', self.fonts)
+        self.materials_header.pack(fill=tk.X, padx=10, pady=(8, 2))
+        self.materials_table = tce.DataTable(self.tab_materials, [
+            ('name', 'Stacja', 240, 'w'), ('system', 'System', 200, 'w'), ('trader', 'Trader', 140, 'w'),
+            ('distance', 'Dystans', 100, 'e'), ('arrival', 'Od gwiazdy', 110, 'e'), ('pad', 'Pad', 70, 'center')],
+            height=18)
+        self.materials_table.pack(fill=tk.BOTH, expand=True, padx=10, pady=(2, 10))
 
         self.tab_mining = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_mining, text='Mining')
@@ -139,10 +128,24 @@ class TradePanel:
         self.mining_btn = ttk.Button(self.mining_entry_frame, text='Odśwież', command=self.refresh_mining_tab)
         self.mining_btn.pack(side=tk.LEFT)
 
-        self.mining_text = tk.Text(self.tab_mining, height=20, width=80, wrap=tk.WORD)
-        self.mining_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
-        self.mining_text.insert('1.0', '(wybierz system i minerał, kliknij Odśwież)')
-        self.mining_text.config(state=tk.DISABLED)
+        self.mining_header = tce.SectionHeader(self.tab_mining, 'Mining', self.fonts)
+        self.mining_header.pack(fill=tk.X, padx=10, pady=(8, 4))
+        self.mining_tables = tk.Frame(self.tab_mining, bg=tce.BG)
+        self.mining_tables.pack(fill=tk.BOTH, expand=True, padx=10, pady=(2, 10))
+        self.mining_tables.columnconfigure((0, 1), weight=1, uniform='mn')
+        self.mining_tables.rowconfigure(1, weight=1)
+        self.mining_hotspots_header = tce.SectionHeader(self.mining_tables, 'Hotspoty (gdzie kopać)', self.fonts)
+        self.mining_hotspots_header.grid(row=0, column=0, sticky='ew', padx=(0, 6))
+        self.mining_buyers_header = tce.SectionHeader(self.mining_tables, 'Kupcy (gdzie sprzedać)', self.fonts)
+        self.mining_buyers_header.grid(row=0, column=1, sticky='ew', padx=(6, 0))
+        self.mining_hotspots_table = tce.DataTable(self.mining_tables, [
+            ('body', 'Pierścień', 220, 'w'), ('type', 'Typ', 90, 'w'), ('count', 'Ile', 60, 'e'),
+            ('distance', 'Odl.', 80, 'e'), ('arrival', 'LS', 70, 'e')], height=16)
+        self.mining_hotspots_table.grid(row=1, column=0, sticky='nsew', padx=(0, 6), pady=(4, 0))
+        self.mining_buyers_table = tce.DataTable(self.mining_tables, [
+            ('station', 'Stacja', 170, 'w'), ('price', 'Cena', 90, 'e'), ('demand', 'Popyt', 80, 'e'),
+            ('distance', 'Odl.', 80, 'e'), ('pad', 'Pad', 60, 'center'), ('age', 'Dane', 50, 'e')], height=16)
+        self.mining_buyers_table.grid(row=1, column=1, sticky='nsew', padx=(6, 0), pady=(4, 0))
 
         self.tab_commodity = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_commodity, text='Towary')
@@ -220,10 +223,13 @@ class TradePanel:
         self.journey_calc_btn = ttk.Button(self.journey_entry_frame, text='Oblicz', command=self.refresh_journey_tab)
         self.journey_calc_btn.pack(side=tk.LEFT)
 
-        self.journey_text = tk.Text(self.tab_journey, height=20, width=80, wrap=tk.WORD)
-        self.journey_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
-        self.journey_text.insert('1.0', '(wpisz start/cel/zasięg, kliknij Oblicz — może potrwać do 2 min)')
-        self.journey_text.config(state=tk.DISABLED)
+        self.journey_header = tce.SectionHeader(self.tab_journey, 'Waypoints', self.fonts)
+        self.journey_header.pack(fill=tk.X, padx=10, pady=(8, 2))
+        self.journey_table = tce.DataTable(self.tab_journey, [
+            ('n', '#', 50, 'e'), ('system', 'System', 320, 'w'), ('jumps', 'Skoki', 80, 'e'),
+            ('jumped', 'Skok (ly)', 110, 'e'), ('left', 'Pozostało (ly)', 130, 'e'), ('neutron', 'Neutron', 90, 'center')],
+            height=18)
+        self.journey_table.pack(fill=tk.BOTH, expand=True, padx=10, pady=(2, 10))
 
         self.tab_engineering = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_engineering, text='Inżynieria')
@@ -255,10 +261,16 @@ class TradePanel:
         self.eng_btn = ttk.Button(self.eng_entry_frame, text='Oblicz', command=self.refresh_engineering_tab, state=tk.DISABLED)
         self.eng_btn.grid(row=1, column=6, sticky='e')
 
-        self.eng_text = tk.Text(self.tab_engineering, height=20, width=80, wrap=tk.WORD)
-        self.eng_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
-        self.eng_text.insert('1.0', '(wczytuję listę blueprintów...)')
-        self.eng_text.config(state=tk.DISABLED)
+        self.eng_header = tce.SectionHeader(self.tab_engineering, 'Wczytuję listę blueprintów...', self.fonts)
+        self.eng_header.pack(fill=tk.X, padx=10, pady=(8, 2))
+        self.eng_status = tk.Label(self.tab_engineering, text='', bg=tce.BG, fg=tce.ORANGE_DIM,
+                                   font=self.fonts.body_bold, anchor='w')
+        self.eng_status.pack(fill=tk.X, padx=10)
+        self.eng_table = tce.DataTable(self.tab_engineering, [
+            ('name', 'Materiał', 280, 'w'), ('type', 'Typ', 120, 'w'), ('grade', 'G', 40, 'center'),
+            ('need', 'Potrzeba', 90, 'e'), ('have', 'Masz', 80, 'e'), ('missing', 'Brakuje', 90, 'e'),
+            ('hint', 'Gdzie zdobyć', 260, 'w')], height=16)
+        self.eng_table.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
         # Start z mainloopa: after() z watku roboczego dziala tylko gdy mainloop juz chodzi
         self.window.after(200, self._start_engineering_data_load)
 
@@ -300,8 +312,6 @@ class TradePanel:
         self.settings_status_var = tk.StringVar(value='')
         ttk.Label(self.settings_frame, textvariable=self.settings_status_var).grid(row=7, column=1, sticky='w', pady=4)
 
-        for text in (self.system_info_text, self.materials_text, self.mining_text, self.journey_text, self.eng_text):
-            tce.style_text(text, self.fonts)
         tce.uppercase_static_texts(self.window)
         self.nav = tce.NavBar(self.window, self.notebook, self.fonts, on_change=self.title_bar.set_title)
         self.nav.pack(fill=tk.X, padx=8, pady=(6, 0), before=self.notebook)
@@ -309,49 +319,40 @@ class TradePanel:
     def _open_settings(self) -> None:
         self.nav.select_frame(self.tab_settings)
 
-    def _set_system_text(self, text: str) -> None:
-        self.system_info_text.config(state=tk.NORMAL)
-        self.system_info_text.delete('1.0', tk.END)
-        self.system_info_text.insert('1.0', text)
-        self.system_info_text.config(state=tk.DISABLED)
-
     def refresh_system_tab(self) -> None:
         """Waliduj w watku Tk i pobierz stacje systemu w watku roboczym (UI nie zamarza)."""
         system_name = self.system_entry_var.get().strip()
         if not system_name:
             return
         self.system_refresh_btn.config(state=tk.DISABLED)
-        self._set_system_text(f'System: {system_name}\n\nSzukam...')
+        self.system_header.set(f'{system_name} — szukam stacji...', '')
         threading.Thread(target=self._system_worker, args=(system_name,), daemon=True).start()
 
     def _system_worker(self, system_name: str) -> None:
-        """Watek roboczy: NIE dotyka widgetow Tk — liczy i oddaje tekst przez after(0)."""
-        lines = [f'System: {system_name}', '']
+        """Watek roboczy: NIE dotyka widgetow Tk — oddaje stacje przez after(0)."""
         try:
-            stations = search_stations(system_name)
-            if stations:
-                lines.append(f'Stacje ({len(stations)}):')
-                for s in stations[:20]:
-                    lines.append(f'  - {s.name} ({s.pad_size or "?"}) {s.distance_to_arrival:.0f} ls')
-            else:
-                lines.append('Brak danych o stacjach.')
+            stations, error = search_stations(system_name), ''
         except Exception as e:
-            lines.append(f'Błąd wyszukiwania stacji: {e}')
+            stations, error = [], str(e)
         try:
-            self.window.after(0, self._system_done, '\n'.join(lines))
+            self.window.after(0, self._system_done, system_name, stations, error)
         except Exception:
             pass
 
-    def _system_done(self, text: str) -> None:
-        """Wywolywane w watku Tk: pokaz wynik i odblokuj przycisk."""
-        self._set_system_text(text)
+    def _system_done(self, system_name: str, stations: list, error: str) -> None:
+        """Wywolywane w watku Tk: wypelnij tabele i odblokuj przycisk."""
+        stations = sorted(stations, key=lambda s: s.distance_to_arrival)
+        self.system_table.set_rows(
+            [(s.name, s.station_type or '?', s.pad_size or '?', f'{s.distance_to_arrival:,.0f} ls',
+              s.primary_economy or '?', s.allegiance or '?') for s in stations],
+            sort_values=[{'arrival': s.distance_to_arrival} for s in stations])
+        if error:
+            self.system_header.set(f'{system_name} — błąd: {error}', '')
+        elif stations:
+            self.system_header.set(f'Stacje w systemie {system_name}', f'{len(stations)} stacji')
+        else:
+            self.system_header.set(f'{system_name}: brak danych o stacjach', '')
         self.system_refresh_btn.config(state=tk.NORMAL)
-
-    def _set_materials_text(self, text: str) -> None:
-        self.materials_text.config(state=tk.NORMAL)
-        self.materials_text.delete('1.0', tk.END)
-        self.materials_text.insert('1.0', text)
-        self.materials_text.config(state=tk.DISABLED)
 
     def refresh_materials_tab(self) -> None:
         """Waliduj w watku Tk i pobierz handlarzy materialow w watku roboczym (UI nie zamarza)."""
@@ -360,37 +361,35 @@ class TradePanel:
         if not system_name or not kind:
             return
         self.materials_btn.config(state=tk.DISABLED)
-        self._set_materials_text(f'System: {system_name} | Rodzaj: {kind}\n\nSzukam...')
+        self.materials_header.set(f'Trader {kind} wokół {system_name} — szukam...', '')
         threading.Thread(target=self._materials_worker, args=(system_name, kind), daemon=True).start()
 
     def _materials_worker(self, system_name: str, kind: str) -> None:
-        """Watek roboczy: NIE dotyka widgetow Tk — liczy i oddaje tekst przez after(0)."""
-        lines = [f'System: {system_name} | Rodzaj: {kind}', '']
+        """Watek roboczy: NIE dotyka widgetow Tk — oddaje handlarzy przez after(0)."""
         try:
-            traders = find_material_traders(system_name, kind, max_ly=50, size=10)
-            if traders:
-                lines.append(f'Handlarze ({len(traders)}):')
-                for t in traders:
-                    lines.append(f'  - {t.name} ({t.system_name}) {t.distance:.1f} ly')
-            else:
-                lines.append('Brak handlarzy w zasięgu.')
+            traders, error = find_material_traders(system_name, kind, max_ly=50, size=25), ''
         except Exception as e:
-            lines.append(f'Błąd wyszukiwania: {e}')
+            traders, error = [], str(e)
         try:
-            self.window.after(0, self._materials_done, '\n'.join(lines))
+            self.window.after(0, self._materials_done, system_name, kind, traders, error)
         except Exception:
             pass
 
-    def _materials_done(self, text: str) -> None:
-        """Wywolywane w watku Tk: pokaz wynik i odblokuj przycisk."""
-        self._set_materials_text(text)
+    def _materials_done(self, system_name: str, kind: str, traders: list, error: str) -> None:
+        """Wywolywane w watku Tk: wypelnij tabele i odblokuj przycisk."""
+        traders = sorted(traders, key=lambda t: t.distance)
+        self.materials_table.set_rows(
+            [(t.name, t.system_name, t.material_trader or t.technology_broker or kind, f'{t.distance:.1f} ly',
+              f'{t.distance_to_arrival:,.0f} ls', 'L' if t.large_pads else ('M' if t.medium_pads else '?'))
+             for t in traders],
+            sort_values=[{'distance': t.distance, 'arrival': t.distance_to_arrival} for t in traders])
+        if error:
+            self.materials_header.set(f'Błąd: {error}', '')
+        elif traders:
+            self.materials_header.set(f'Trader {kind} wokół {system_name}', f'{len(traders)} stacji, najbliżej najpierw')
+        else:
+            self.materials_header.set(f'Brak traderów {kind} w zasięgu 50 ly od {system_name}', '')
         self.materials_btn.config(state=tk.NORMAL)
-
-    def _set_mining_text(self, text: str) -> None:
-        self.mining_text.config(state=tk.NORMAL)
-        self.mining_text.delete('1.0', tk.END)
-        self.mining_text.insert('1.0', text)
-        self.mining_text.config(state=tk.DISABLED)
 
     def refresh_mining_tab(self) -> None:
         """Waliduj w watku Tk i pobierz hotspoty i kupcow w watku roboczym (UI nie zamarza)."""
@@ -399,42 +398,40 @@ class TradePanel:
         if not system_name or not mineral:
             return
         self.mining_btn.config(state=tk.DISABLED)
-        self._set_mining_text(f'System: {system_name} | Minerał: {mineral}\n\nSzukam...')
+        self.mining_header.set(f'{mineral} wokół {system_name} — szukam...', '')
         threading.Thread(target=self._mining_worker, args=(system_name, mineral), daemon=True).start()
 
     def _mining_worker(self, system_name: str, mineral: str) -> None:
-        """Watek roboczy: NIE dotyka widgetow Tk — liczy i oddaje tekst przez after(0)."""
-        lines = [f'System: {system_name} | Minerał: {mineral}', '']
+        """Watek roboczy: NIE dotyka widgetow Tk — hotspoty i kupcy w jednym watku, wynik przez after(0)."""
+        errors = []
         try:
-            hotspots = find_mining_hotspots(system_name, mineral, max_ly=50, size=5)
-            if hotspots:
-                lines.append(f'Hotspoty ({len(hotspots)}):')
-                for h in hotspots:
-                    lines.append(f'  - {h.body_name} ({h.ring_name}, {h.ring_type}) {h.count}x, {h.distance:.1f} ly')
-            else:
-                lines.append('Brak hotspotów w zasięgu.')
+            hotspots = find_mining_hotspots(system_name, mineral, max_ly=50, size=20)
         except Exception as e:
-            lines.append(f'Błąd wyszukiwania hotspotów: {e}')
-
-        lines.append('')
+            hotspots = []
+            errors.append(f'hotspoty: {e}')
         try:
-            buyers = find_mineral_buyers(mineral, system_name, max_ly=60, size=5)
-            if buyers:
-                lines.append(f'Kupcy ({len(buyers)}):')
-                for b in buyers:
-                    lines.append(f'  - {b.station_name} ({b.system_name}) {b.sell_price:,}cr, {b.distance:.1f} ly')
-            else:
-                lines.append('Brak kupców w zasięgu.')
+            buyers = find_mineral_buyers(mineral, system_name, max_ly=60, size=20)
         except Exception as e:
-            lines.append(f'Błąd wyszukiwania kupców: {e}')
+            buyers = []
+            errors.append(f'kupcy: {e}')
         try:
-            self.window.after(0, self._mining_done, '\n'.join(lines))
+            self.window.after(0, self._mining_done, system_name, mineral, hotspots, buyers, '; '.join(errors))
         except Exception:
             pass
 
-    def _mining_done(self, text: str) -> None:
-        """Wywolywane w watku Tk: pokaz wynik i odblokuj przycisk."""
-        self._set_mining_text(text)
+    def _mining_done(self, system_name: str, mineral: str, hotspots: list, buyers: list, error: str) -> None:
+        """Wywolywane w watku Tk: wypelnij obie tabele i odblokuj przycisk."""
+        self.mining_hotspots_table.set_rows(
+            [(h.ring_name or h.body_name, h.ring_type, h.count, f'{h.distance:.1f} ly', f'{h.distance_to_arrival:,.0f}')
+             for h in hotspots],
+            sort_values=[{'count': h.count, 'distance': h.distance, 'arrival': h.distance_to_arrival} for h in hotspots])
+        self.mining_buyers_table.set_rows(
+            [(b.station_name, f'{b.sell_price:,}', f'{b.demand:,}', f'{b.distance:.1f} ly', b.pad_size or '?',
+              _data_age(b.updated_at)) for b in buyers],
+            sort_values=[{'price': b.sell_price, 'demand': b.demand, 'distance': b.distance} for b in buyers])
+        self.mining_hotspots_header.set(right_text=str(len(hotspots)))
+        self.mining_buyers_header.set(right_text=str(len(buyers)))
+        self.mining_header.set(f'Błąd: {error}' if error else f'{mineral} wokół {system_name}', '')
         self.mining_btn.config(state=tk.NORMAL)
 
     def refresh_commodity_tab(self) -> None:
@@ -531,11 +528,11 @@ class TradePanel:
         labels = sorted(self._blueprints)
         self.eng_blueprint_combo.config(values=labels)
         if not labels or not table:
-            self._set_eng_text('Nie udało się pobrać danych blueprintów/materiałów (brak sieci i brak cache).')
+            self.eng_header.set('Nie udało się pobrać danych blueprintów/materiałów (brak sieci i brak cache)', '')
             return
         self.eng_btn.config(state=tk.NORMAL)
-        self._set_eng_text(f'Blueprintów: {len(labels)}. Wybierz blueprint i grade, kliknij Oblicz.\n\n'
-                           + self._materials_status_line())
+        self.eng_header.set('Wybierz blueprint i grade, kliknij Oblicz', f'{len(labels)} blueprintów')
+        self.eng_status.config(text=self._materials_status_line().upper())
 
     def _materials_status_line(self) -> str:
         with self._materials_lock:
@@ -543,12 +540,6 @@ class TradePanel:
         if not ts:
             return 'Stan materiałów: brak (event Materials pojawia się w journalu przy starcie gry).'
         return f'Stan materiałów z journala: {ts} ({count} pozycji).'
-
-    def _set_eng_text(self, text: str) -> None:
-        self.eng_text.config(state=tk.NORMAL)
-        self.eng_text.delete('1.0', tk.END)
-        self.eng_text.insert('1.0', text)
-        self.eng_text.config(state=tk.DISABLED)
 
     def refresh_engineering_tab(self) -> None:
         """Bez sieci: dane juz w pamieci — liczymy w watku Tk."""
@@ -559,15 +550,23 @@ class TradePanel:
             g_from, g_to = int(self.eng_grade_from_var.get()), int(self.eng_grade_to_var.get())
             rolls = int(self.eng_rolls_var.get().strip())
         except ValueError:
-            self._set_eng_text('Błąd: grade i rolle muszą być liczbami.')
+            self.eng_header.set('Błąd: grade i rolle muszą być liczbami', '')
             return
         if g_from > g_to or rolls < 1:
-            self._set_eng_text('Błąd: "grade od" nie może być większy niż "do", rolle >= 1.')
+            self.eng_header.set('Błąd: "grade od" nie może być większy niż "do", rolle >= 1', '')
             return
         with self._materials_lock:
             inventory = dict(self._materials_inventory)
         needs = mats.missing_for(bp, g_from, g_to, rolls, inventory, self._material_table)
-        self._set_eng_text('\n'.join(_format_engineering(bp, g_from, g_to, rolls, needs, self._materials_status_line())))
+        self.eng_table.set_rows(
+            [(n.name, n.type, f'G{n.rarity}' if n.rarity else '?', n.need, n.have, n.missing or '✓',
+              MATERIAL_HINTS.get(n.type, '?') if n.missing else '') for n in needs],
+            sort_values=[{'need': n.need, 'have': n.have, 'missing': n.missing, 'grade': n.rarity} for n in needs],
+            tags=['bad' if n.missing else 'good' for n in needs])
+        missing = sum(1 for n in needs if n.missing)
+        self.eng_header.set(f'{bp.label} — grade {g_from}→{g_to}, {rolls} roll/grade',
+                            f'brakuje {missing} z {len(needs)}' if missing else 'masz wszystko')
+        self.eng_status.config(text=self._materials_status_line().upper())
 
     def refresh_market_tab(self) -> None:
         """Waliduj w watku Tk i pobierz pelny rynek stacji w watku roboczym (UI nie zamarza)."""
@@ -613,12 +612,6 @@ class TradePanel:
         self.market_imports_header.set(right_text=str(len(imports)))
         self.market_btn.config(state=tk.NORMAL)
 
-    def _set_journey_text(self, text: str) -> None:
-        self.journey_text.config(state=tk.NORMAL)
-        self.journey_text.delete('1.0', tk.END)
-        self.journey_text.insert('1.0', text)
-        self.journey_text.config(state=tk.DISABLED)
-
     def refresh_journey_tab(self) -> None:
         """Waliduj dane w watku Tk i uruchom obliczenie trasy Spansh w watku roboczym (UI nie zamarza)."""
         start = self.journey_start_var.get().strip()
@@ -626,37 +619,39 @@ class TradePanel:
         try:
             ship_range = float(self.journey_range_var.get().strip())
         except ValueError:
-            self._set_journey_text('Błąd: zasięg musi być liczbą.')
+            self.journey_header.set('Błąd: zasięg musi być liczbą', '')
             return
         if not start or not end:
             return
         self.journey_calc_btn.config(state=tk.DISABLED)
-        self._set_journey_text(f'{start} -> {end} (zasięg {ship_range} ly)\n\nLiczę trasę... (do 2 min)')
+        self.journey_header.set(f'{start} → {end} (zasięg {ship_range} ly) — liczę trasę, do 2 min...', '')
         threading.Thread(target=self._journey_worker, args=(start, end, ship_range), daemon=True).start()
 
     def _journey_worker(self, start: str, end: str, ship_range: float) -> None:
-        """Watek roboczy: NIE dotyka widgetow Tk — liczy i oddaje tekst przez after(0)."""
-        lines = [f'{start} -> {end} (zasięg {ship_range} ly)', '']
+        """Watek roboczy: NIE dotyka widgetow Tk — oddaje plan przez after(0)."""
         try:
             plan = self.trade_engine.plan_journey(start, end, ship_range)
-            if plan.error:
-                lines.append(f'Błąd: {plan.error}')
-            else:
-                lines.append(f'Skoki: {plan.total_jumps} | Dystans: {plan.total_distance:.1f} ly')
-                lines.append('')
-                for hop in plan.hops[:30]:
-                    neutron = ' [neutron]' if getattr(hop, 'neutron_star', False) else ''
-                    lines.append(f'  - {hop.system} ({hop.jumps} skoki, {hop.distance_jumped:.1f} ly){neutron}')
         except Exception as e:
-            lines.append(f'Błąd kalkulacji: {e}')
+            plan = JourneyPlan(start_system=start, end_system=end, error=str(e))
         try:
-            self.window.after(0, self._journey_done, '\n'.join(lines))
+            self.window.after(0, self._journey_done, plan)
         except Exception:
             pass
 
-    def _journey_done(self, text: str) -> None:
-        """Wywolywane w watku Tk: pokaz wynik i odblokuj przycisk."""
-        self._set_journey_text(text)
+    def _journey_done(self, plan: 'JourneyPlan') -> None:
+        """Wywolywane w watku Tk: wypelnij tabele waypointow i odblokuj przycisk."""
+        hops = [] if plan.error else plan.hops
+        self.journey_table.set_rows(
+            [(i, h.system, h.jumps, f'{h.distance_jumped:.1f}', f'{h.distance_left:.1f}', '★' if h.neutron_star else '')
+             for i, h in enumerate(hops, 1)],
+            sort_values=[{'n': i, 'jumps': h.jumps, 'jumped': h.distance_jumped, 'left': h.distance_left}
+                         for i, h in enumerate(hops, 1)],
+            tags=['good' if h.neutron_star else '' for h in hops])
+        if plan.error:
+            self.journey_header.set(f'Błąd: {plan.error}', '')
+        else:
+            self.journey_header.set(f'{plan.start_system} → {plan.end_system}',
+                                    f'{plan.total_jumps} skoków · {plan.total_distance:,.0f} ly')
         self.journey_calc_btn.config(state=tk.NORMAL)
 
     def save_settings(self) -> None:
