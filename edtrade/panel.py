@@ -40,7 +40,7 @@ PAGE_HINTS = {
     'Mining': 'Gdzie kopać (hotspoty) i gdzie sprzedać. Dwuklik: kopiuj system.',
     'Blueprinty': 'Czego brakuje do ulepszenia — stan materiałów z journala.',
     'Sesja': 'Zarobki z tej sesji gry (od uruchomienia gry), liczone z journala. Prawy klik: rynek stacji.',
-    'Ustawienia': 'Filtry rynków, wygląd paska i panelu. Zapisz, żeby zachować.',
+    'Ustawienia': 'Filtry rynków, wygląd paska i panelu. Zmiany zapisują się same.',
 }
 PAD_FILTER_LABELS = {'auto': 'Automatycznie (ze statku)', 'large': 'Tylko pad L', 'all': 'Wszystkie pady'}
 MARKET_TYPE_LABELS = {'all': 'Wszystkie', 'space': 'Tylko kosmiczne', 'planetary': 'Tylko planetarne'}
@@ -580,6 +580,9 @@ class TradePanel:
             self.nav.select_frame(start_page)
         self._bind_all_row_actions()
         self.window.bind('<Configure>', self._schedule_layout_save, add='+')
+        # Autozapis Ustawień: każda zmiana pola zapisuje config (po 0.5 s spokoju) — przycisk Zapisz niepotrzebny
+        self._autosave_job = None
+        self._watch_settings(self.settings_frame)
 
     def _eddn_tick(self) -> None:
         """Status EDDN co 30 s: połączenie i ile rynków jest w lokalnej bazie."""
@@ -626,8 +629,38 @@ class TradePanel:
         if self.on_verdict_display_change is not None:
             self.on_verdict_display_change()
 
+    def _watch_settings(self, frame: tk.Misc) -> None:
+        """Autozapis: każda zmienna podpięta pod widżet w zakładce Ustawienia zapisuje config po zmianie.
+
+        Działa dla każdego nowego pola dodanego do settings_frame — wystarczy dopisać klucz w save_settings."""
+        own_vars = {str(v): v for v in vars(self).values() if isinstance(v, tk.Variable)}
+        watched = set()
+        widgets = [frame]
+        while widgets:
+            widget = widgets.pop()
+            widgets.extend(widget.winfo_children())
+            for option in ('textvariable', 'variable'):
+                try:
+                    name = str(widget.cget(option))
+                except tk.TclError:
+                    continue
+                var = own_vars.get(name)
+                if var is not None and name not in watched and var is not self.settings_status_var:
+                    watched.add(name)
+                    var.trace_add('write', lambda *_: self._schedule_autosave())
+
+    def _schedule_autosave(self) -> None:
+        """Odczekaj chwilę po ostatniej zmianie (suwak, pisanie), żeby nie zapisywać pliku przy każdym kroku."""
+        if self._autosave_job is not None:
+            self.window.after_cancel(self._autosave_job)
+        self._autosave_job = self.window.after(500, self._autosave)
+
+    def _autosave(self) -> None:
+        self._autosave_job = None
+        self.save_settings()
+
     def _appearance_preview(self, var: tk.DoubleVar, value_label: ttk.Label) -> None:
-        """Suwaki CONTROL działają na żywo; zapis do configu dopiero przyciskiem ZAPISZ."""
+        """Suwaki CONTROL działają na żywo; zapis do configu automatycznie (autozapis Ustawień)."""
         value_label.configure(text=f'{var.get():.2f}')
         if var is self.panel_scale_var:
             self.fonts.set_scale(var.get())
