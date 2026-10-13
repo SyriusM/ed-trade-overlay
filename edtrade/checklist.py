@@ -124,6 +124,8 @@ class RouteChecklist:
             self.docked = (ev.get("StarSystem", "").lower(), ev.get("StationName", "").lower())
             if self.at_destination() and not self.arrived:
                 self.arrived = True
+                if not self.hop.names:  # dolot bez ładunku — nie ma czego sprzedać
+                    self._advance()
                 return True
             return False
         if event == "MarketBuy" and self._matches(ev.get("Type", "")):

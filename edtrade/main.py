@@ -16,7 +16,8 @@ from pathlib import Path
 from .watcher import JournalWatcher
 from .filters import filter_from_config
 from .trade import (TradeEngine, ship_needs_large_pad, get_system_info, search_stations, find_material_traders,
-                    find_mining_hotspots, find_mineral_buyers)
+                    find_mining_hotspots, find_mineral_buyers, get_station_market, apply_live_market,
+                    top_up_route)
 from .overlay import TradeOverlay
 from .panel import TradePanel
 from .window_watch import get_active_window
@@ -204,7 +205,6 @@ class EDTradeOverlayApp:
         )
         self._sync_credits()
         route = self.trade_engine.calculate_route_via_spansh(system, station)
-        self._screen_route(route)
 
         if route.error:
             logger.error("Błąd przeliczenia trasy po Loadout: %s", route.error)
@@ -243,12 +243,18 @@ class EDTradeOverlayApp:
                                    jump_range=self.trade_engine.ly_per, security=security,
                                    strategy=self.user_config.get('trade_strategy'))
 
-    def _publish_route(self, route, system: str, station: str) -> None:
-        """Nowa trasa → nowa checklista (kup → leć → sprzedaj) i wysłanie do overlaya."""
+    def _publish_route(self, route, system: str, station: str, security: str = "") -> None:
+        """Nowa trasa → dopełnienie ładowni → ocena SWOT → checklista (kup → leć → sprzedaj) i wysłanie do overlaya."""
         self.checklist = None
         if not route.error and route.hops_list:
             if not self._commodity_names:
                 self._commodity_names = load_commodity_names()
+            try:  # wolne miejsce na każdym odcinku (też pustym dolocie) → towary na następny przystanek
+                top_up_route(route, int(self.trade_engine.capacity), self.trade_engine.capital, self._commodity_names)
+            except Exception:
+                logger.exception("Błąd dopełniania ładowni na trasie")
+            self._screen_route(route, security)  # odrzucona trasa dostaje route.error i nie trafia do checklisty
+        if not route.error and route.hops_list:
             self.checklist = RouteChecklist(
                 route, self._commodity_names,
                 cargo=self._cargo or self.watcher._player_cargo,
@@ -382,11 +388,10 @@ class EDTradeOverlayApp:
 
         if route is None:
             return
-        self._screen_route(route, security)
         if route.error:
             logger.error("Błąd kalkulacji: %s", route.error)
 
-        self._publish_route(route, system, station)
+        self._publish_route(route, system, station, security)
         logger.info("Trasa: %s", route.summary())
 
         # Zapisz capacity użyte do obliczenia trasy
@@ -405,6 +410,10 @@ class EDTradeOverlayApp:
             )
         except Exception:
             logger.exception("Błąd w _on_market")
+        try:
+            self._check_route_against_market(event)
+        except Exception:
+            logger.exception("Błąd weryfikacji trasy z rynkiem")
         if self.panel is not None:  # świeże ceny tej stacji → tabela "sprzedać tutaj?" w panelu
             self.panel.update_context(live_market=swot.load_live_market(self.watcher.journal_dir))
         self._recheck_route_on_market(event)
@@ -427,6 +436,31 @@ class EDTradeOverlayApp:
                 self.overlay._refresh_now()
             if self.panel is not None:
                 self.panel.show_route(route)
+
+    def _check_route_against_market(self, event: dict) -> None:
+        """Rynek z gry ma pierwszeństwo przed Spansh: gdy gracz otworzy rynek w źródle bieżącego hopu,
+        ładunek hopu liczymy od nowa z tego, co faktycznie jest na stanie (Spansh bywa nieaktualny)."""
+        cl = self.checklist
+        if cl is None or cl.finished or cl.arrived:
+            return
+        hop = cl.hop
+        here = (event.get("StarSystem", "").lower(), event.get("StationName", "").lower())
+        if here != (hop.source_system.lower(), hop.source_station.lower()):
+            return
+        data = market_cache._load_market_json(self.watcher.journal_dir / "Market.json")
+        if not data or data.get("MarketID") != event.get("MarketID"):
+            return
+        dest = get_station_market(hop.destination_system, hop.destination_station)
+        self._sync_credits()
+        if not self._commodity_names:
+            self._commodity_names = load_commodity_names()
+        if apply_live_market(cl.route, cl.hop_index, data.get("Items", []), dest.imports,
+                             int(self.trade_engine.capacity), self.trade_engine.capital, self._commodity_names):
+            cl._sync_route()
+            if self.overlay:
+                self.overlay.update_route(cl.route)
+            if self.panel is not None:
+                self.panel.show_route(cl.route)
 
     def _on_materials(self, event: dict):
         """Reaguje na event Materials (start gry) — stan materiałów do zakładki Inżynieria."""

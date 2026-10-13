@@ -201,7 +201,7 @@ class TradeOverlay:
             display_item = current_hop.commodity
             display_qty = current_hop.amount
             display_names = current_hop.names
-            display_cargo = current_hop.cargo_text()
+            display_cargo = current_hop.cargo_text() or "BEZ ŁADUNKU"
             multi = len(current_hop.commodities) > 1
             display_buy = current_hop.buy_price
             display_sell = current_hop.sell_price
@@ -244,7 +244,7 @@ class TradeOverlay:
 
         self.dest_label.config(text=f"{display_dest_system} · {display_dest_station}".upper())
         # Kilka towarów w ładowni: lista zamiast cen (ceny każdego są w panelu, w karcie hopu)
-        route_text = (f"{display_cargo}  ·  {display_qty}T" if multi else
+        route_text = (f"{display_cargo}  ·  {display_qty}T" if multi else display_cargo if not display_names else
                       f"{display_cargo}  {display_buy:,} → {display_sell:,} CR") + f"  ·  ZYSK {route.total_profit:,} CR"
         if extras:
             route_text += "  ·  " + "  ".join(extras)

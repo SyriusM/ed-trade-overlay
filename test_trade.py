@@ -274,3 +274,93 @@ class TestCreditsFromJournal(unittest.TestCase):
                      {"event": "MarketBuy", "TotalCost": 300_000},
                      {"event": "MarketSell", "TotalSale": 450_000}])
         self.assertEqual(w.credits, 1_150_000)
+
+
+class TestLiveMarket(unittest.TestCase):
+    """Rynek z gry (Market.json) ma pierwszeństwo przed nieaktualnym Spansh — przypadek z Almadravy."""
+
+    def _route(self):
+        from edtrade.trade import Hop, HopCommodity, TradeRoute
+        hop = Hop("Apárctias", "Almadrava", "Core Sys Sector YO-R a4-3", "Tau Ceti Freedom Wing HQ",
+                  "Gold", 1, 4694, 48808, 44114,
+                  commodities=[HopCommodity("Gold", 1, 4694, 48808, 44114)])
+        later = Hop(profit=8_904_710)
+        return TradeRoute(hops=2, hops_list=[hop, later], total_profit=8_948_824, buy_item="Gold", buy_quantity=1)
+
+    @staticmethod
+    def _item(symbol, local, buy, stock):
+        return {"Name": f"${symbol}_name;", "Name_Localised": local, "BuyPrice": buy, "Stock": stock}
+
+    def test_missing_gold_replaced_by_stock_on_hand(self):
+        from edtrade.trade import MarketItem, apply_live_market
+        live = [self._item("beryllium", "Beryllium", 3951, 1), self._item("cobalt", "Cobalt", 5167, 3168),
+                self._item("silver", "Silver", 4052, 8), self._item("polymers", "Polymers", 6, 1942)]
+        dest = [MarketItem(name="cobalt", sell_price=9000, demand=200), MarketItem(name="silver", sell_price=40000, demand=500),
+                MarketItem(name="polymers", sell_price=100, demand=50_000), MarketItem(name="beryllium", sell_price=9000, demand=0)]
+        route = self._route()
+        self.assertTrue(apply_live_market(route, 0, live, dest, capacity=256, capital=59_538_834))
+        hop = route.hops_list[0]
+        self.assertNotIn("Gold", hop.names)
+        # srebro (8 t, największa marża) → kobalt do limitu popytu (200) → polimery na resztę ładowni
+        self.assertEqual([(c.name, c.amount) for c in sorted(hop.commodities, key=lambda c: -(c.sell_price - c.buy_price))],
+                         [("Silver", 8), ("Cobalt", 200), ("Polymers", 48)])
+        self.assertEqual(hop.amount, 256)
+        self.assertEqual(route.total_profit, 8_904_710 + hop.profit)
+        self.assertEqual(route.cargo_used, 256)
+        self.assertEqual(route.buy_item, hop.commodity)
+        self.assertEqual(route.error, "")
+
+    def test_capital_and_nothing_left(self):
+        from edtrade.trade import MarketItem, apply_live_market
+        route = self._route()
+        live = [self._item("cobalt", "Cobalt", 5000, 3000)]
+        apply_live_market(route, 0, live, [MarketItem(name="cobalt", sell_price=9000, demand=1000)], 256, capital=50_000)
+        self.assertEqual(route.hops_list[0].amount, 10)
+        route = self._route()
+        self.assertTrue(apply_live_market(route, 0, [], [], 256, 10**9))
+        self.assertIn("nieaktualne", route.error)
+
+    def test_spansh_prices_when_ardent_unavailable(self):
+        from edtrade.trade import apply_live_market
+        route = self._route()
+        self.assertFalse(apply_live_market(route, 0, [self._item("gold", "Gold", 4694, 1)], [], 256, 10**9))
+        route = self._route()
+        apply_live_market(route, 0, [self._item("gold", "Gold", 4694, 300)], [], 256, 10**9)
+        self.assertEqual(route.hops_list[0].amount, 256)
+
+
+class TestTopUpRoute(unittest.TestCase):
+    """Żaden odcinek nie leci pusty: wolne miejsce → towary opłacalne na następnym przystanku (dane Ardent)."""
+
+    def test_fills_partial_and_empty_legs(self):
+        from edtrade.trade import Hop, HopCommodity, MarketItem, StationMarket, TradeRoute, top_up_route
+        markets = {
+            "a": StationMarket(exports=[MarketItem(name="gold", buy_price=45000, stock=1000),
+                                        MarketItem(name="polymers", buy_price=50, stock=1000)]),
+            "b": StationMarket(exports=[MarketItem(name="tritium", buy_price=40000, stock=500)],
+                               imports=[MarketItem(name="polymers", sell_price=500, demand=100)]),
+            "c": StationMarket(imports=[MarketItem(name="tritium", sell_price=50000, demand=1000)]),
+        }
+        calls = []
+
+        def fake(system, station):
+            calls.append(station)
+            return markets[station]
+
+        gold = HopCommodity("Gold", 150, 45000, 60000, 150 * 15000)
+        route = TradeRoute(hops=2, total_profit=gold.profit, hops_list=[
+            Hop("A", "a", "B", "b", "Gold", 150, 45000, 60000, gold.profit, commodities=[gold]),
+            Hop("B", "b", "C", "c")])  # dolot, na którym Spansh nic nie wiezie
+        self.assertEqual(top_up_route(route, 256, 10**9, {"polymers": "Polymers", "tritium": "Tritium"}, fake), 2)
+        first, second = route.hops_list
+        self.assertEqual(first.commodity, "Gold")  # wybór Spansh zostaje, dochodzi tylko wolne miejsce
+        self.assertEqual([(c.name, c.amount) for c in first.commodities], [("Gold", 150), ("Polymers", 100)])
+        self.assertEqual([(c.name, c.amount) for c in second.commodities], [("Tritium", 256)])
+        self.assertEqual(route.total_profit, gold.profit + 100 * 450 + 256 * 10000)
+        self.assertEqual(route.cargo_used, 250)
+        self.assertEqual(sorted(calls), ["a", "b", "c"])  # każdy rynek pobrany raz
+
+    def test_full_hold_untouched(self):
+        from edtrade.trade import Hop, TradeRoute, top_up_route
+        route = TradeRoute(hops_list=[Hop("A", "a", "B", "b", "Gold", 256, 1, 2, 256)])
+        self.assertEqual(top_up_route(route, 256, 10**9, market_fn=lambda *_: self.fail("bez zapytań")), 0)

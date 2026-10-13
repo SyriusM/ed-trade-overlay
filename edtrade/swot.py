@@ -270,6 +270,9 @@ def assess_hop(hop, capacity: int, live: Optional[LiveMarket] = None, now: Optio
     st = get_strategy(strategy)
     swot = Swot(penalty=st.penalty)
     items = list(hop.commodities) or []
+    if not items:  # pusty dolot do następnego źródła — nie ma czego oceniać poza drogą
+        _jumps_check(swot, hop.distance, jump_range, st)
+        return swot
     live = live if live is not None and live.is_at(hop.source_system, hop.source_station, now) else None
 
     profit, amount, dropped = 0, 0, {}

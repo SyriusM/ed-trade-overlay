@@ -695,6 +695,9 @@ class TradePanel:
             goods = ', '.join(f'{c.name} ×{c.amount} @ {c.buy_price:,} → {c.sell_price:,}' for c in hop.commodities)
             buy = f'→  {hop.source_station} · {hop.source_system}    KUP {hop.amount} T: {goods} CR'
             sell = f'←  {hop.destination_station} · {hop.destination_system}    SPRZEDAJ WSZYSTKO'
+        elif not hop.commodity:  # dolot bez opłacalnego towaru do następnej stacji
+            buy = f'→  {hop.source_station} · {hop.source_system}    BEZ ŁADUNKU'
+            sell = f'←  {hop.destination_station} · {hop.destination_system}'
         else:
             buy = f'→  {hop.source_station} · {hop.source_system}    KUP {hop.commodity} ×{hop.amount} @ {hop.buy_price:,} CR'
             sell = f'←  {hop.destination_station} · {hop.destination_system}    SPRZEDAJ @ {hop.sell_price:,} CR'
