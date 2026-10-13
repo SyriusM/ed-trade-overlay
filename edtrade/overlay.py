@@ -219,7 +219,10 @@ class TradeOverlay:
         extras = []
         if route.jumps > 0:
             extras.append(f"{route.jumps} SKOKI")
-        if getattr(route, '_market_freshness_ts', None):
+        swot = getattr(route, '_swot', None)
+        if swot is not None and swot.short():
+            extras.append(swot.short())  # 1–2 najważniejsze uwagi SWOT (np. "podaż 120/256 · dane 7h")
+        elif getattr(route, '_market_freshness_ts', None):
             import time
             elapsed = int(time.time() - route._market_freshness_ts)
             extras.append(f"{elapsed}s temu" if elapsed < 60 else

@@ -13,6 +13,7 @@ from typing import Callable, Optional
 from .config import load_user_config, save_user_config
 from . import materials as mats
 from . import tce_theme as tce
+from . import swot as swot_mod
 from .checklist import load_commodity_names
 from .filters import filter_from_config
 from datetime import datetime, timezone
@@ -131,7 +132,7 @@ class TradePanel:
                          ('system', 'System', 140, 'w'), ('sell', 'Cena', 70, 'e'), ('per_t', 'Zysk/t', 70, 'e'),
                          ('total', 'Zysk', 100, 'e'), ('time', 'Czas', 60, 'e'), ('per_h', 'CR/H', 100, 'e'),
                          ('distance', 'Odl.', 60, 'e'), ('arrival', 'LS', 60, 'e'), ('pad', 'Pad', 40, 'center'),
-                         ('age', 'Dane', 55, 'e')]
+                         ('age', 'Dane', 55, 'e'), ('notes', 'Uwagi (SWOT)', 220, 'w')]
         self.nearby_table = tce.DataTable(self.tab_nearby, trade_columns, height=9)
         self.nearby_table.pack(fill=tk.BOTH, expand=True, padx=10, pady=(2, 6))
         self.nearby_cargo_header = tce.SectionHeader(self.tab_nearby, 'Twój ładunek — gdzie sprzedać', self.fonts)
@@ -666,7 +667,9 @@ class TradePanel:
         if finished:
             self.route_status.config(text='TRASA UKOŃCZONA', fg=tce.GREEN)
         else:
-            self.route_status.config(text=f'TRASA AKTYWNA — HOP {current}/{len(hops)}', fg=tce.GREEN)
+            swot = getattr(route, '_swot', None)
+            notes = f' · {swot.short(3)}' if swot is not None and swot.short(3) else ''
+            self.route_status.config(text=f'TRASA AKTYWNA — HOP {current}/{len(hops)}{notes}'.upper(), fg=tce.GREEN)
         for i, hop in enumerate(hops, 1):
             self._route_card(i, hop, done=finished or i < current, active=not finished and i == current,
                              steps=steps if not finished and i == current else '')
@@ -709,14 +712,15 @@ class TradePanel:
         return float(self.context()['jump_range'] or 30.0)
 
     @staticmethod
-    def _trade_row(t, names: dict, with_buy: bool) -> tuple:
+    def _trade_row(t, names: dict, with_buy: bool, notes: Optional[str] = None) -> tuple:
         name = names.get(t.commodity.lower(), t.commodity)
         minutes = f'{int(t.travel_s // 60)}:{int(t.travel_s % 60):02d}'
         common = (t.sell_station, t.sell_system, f'{t.sell_price:,}')
         tail = (minutes, f'{t.profit_per_hour / 1e6:.1f} M', f'{t.distance:.1f}', f'{t.distance_to_arrival:,.0f}',
                 (t.pad_size or '?')[0].upper(), _data_age(t.updated_at))
         if with_buy:
-            return (name, f'{t.buy_price:,}') + common + (f'{t.profit_per_unit:,}', f'{t.total_profit:,}') + tail
+            row = (name, f'{t.buy_price:,}') + common + (f'{t.profit_per_unit:,}', f'{t.total_profit:,}') + tail
+            return row + (notes,) if notes is not None else row
         return (name, t.units) + common + (f'{t.total_profit:,}',) + tail
 
     @staticmethod
@@ -773,9 +777,18 @@ class TradePanel:
         mode = self.nearby_mode_var.get()
         if self._nearby_meta is not None:
             system_name, station_name, capacity, names, error, filter_text = self._nearby_meta
-            trades = rank_trades(self._nearby_cands, mode)
-            self.nearby_table.set_rows([self._trade_row(t, names, True) for t in trades],
+            # SWOT przed rankingiem: kupcy z odrzuconym handlem (brak towaru, stare dane) nie wchodzą do wyboru
+            hold_t = capacity or 304
+            live = self.context().get('live_market')
+            screened = [swot_mod.screen_trades(c, hold_t, live, (system_name, station_name))[0]
+                        for c in self._nearby_cands]
+            dropped = sum(1 for c, k in zip(self._nearby_cands, screened) if c and not k)
+            trades = rank_trades(screened, mode)
+            _, swots = swot_mod.screen_trades(trades, hold_t, live, (system_name, station_name))
+            self.nearby_table.set_rows([self._trade_row(t, names, True, swots[id(t)].short()) for t in trades],
                                        sort_values=[self._trade_sort(t) for t in trades])
+            if dropped:
+                filter_text += f' · odrzucone (SWOT): {dropped}'
             hold = f'ładownia {capacity} t' if capacity else 'ładownia 304 t (domyślnie — czekam na Loadout)'
             if error:
                 self.nearby_header.set(f'{station_name} ({system_name}) — błąd: {error}', '')

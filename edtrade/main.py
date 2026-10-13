@@ -21,6 +21,7 @@ from .overlay import TradeOverlay
 from .panel import TradePanel
 from .window_watch import get_active_window
 from . import market_cache
+from . import swot
 from .market_cache import init_market_cache
 from . import config as user_config_module
 from .checklist import RouteChecklist, load_commodity_names
@@ -203,6 +204,7 @@ class EDTradeOverlayApp:
         )
         self._sync_credits()
         route = self.trade_engine.calculate_route_via_spansh(system, station)
+        self._screen_route(route)
 
         if route.error:
             logger.error("Błąd przeliczenia trasy po Loadout: %s", route.error)
@@ -231,6 +233,14 @@ class EDTradeOverlayApp:
         """Kapitał dla Spansh = saldo z journala (chyba że podano --credits)."""
         if self.args.credits is None and self.watcher.credits is not None:
             self.trade_engine.credits = self.watcher.credits
+
+    def _screen_route(self, route, security: str = ""):
+        """SWOT przed rekomendacją: żywy rynek (Market.json) zamiast danych Spansh, wiek danych, podaż/popyt."""
+        live = swot.load_live_market(self.watcher.journal_dir)
+        if self.panel is not None:
+            self.panel.update_context(live_market=live)
+        return swot.apply_to_route(route, int(self.trade_engine.capacity), live,
+                                   jump_range=self.trade_engine.ly_per, security=security)
 
     def _publish_route(self, route, system: str, station: str) -> None:
         """Nowa trasa → nowa checklista (kup → leć → sprzedaj) i wysłanie do overlaya."""
@@ -309,11 +319,13 @@ class EDTradeOverlayApp:
             route = self.trade_engine.calculate_route_via_spansh(system, station)
 
         # Pobierz info o systemie i stacjach
+        security = ''
         try:
             system_id64 = str(event.get('SystemAddress', ''))
             info_parts = []
             if system_id64:
                 sys_info = get_system_info(system_id64)
+                security = sys_info.security
                 if sys_info.name:
                     info_parts.append(f'{sys_info.allegiance} | sec:{sys_info.security}')
             stations = search_stations(system)
@@ -369,6 +381,7 @@ class EDTradeOverlayApp:
 
         if route is None:
             return
+        self._screen_route(route, security)
         if route.error:
             logger.error("Błąd kalkulacji: %s", route.error)
 
@@ -391,6 +404,26 @@ class EDTradeOverlayApp:
             )
         except Exception:
             logger.exception("Błąd w _on_market")
+        self._recheck_route_on_market(event)
+
+    def _recheck_route_on_market(self, event: dict) -> None:
+        """Gracz otworzył rynek w stacji kupna, nic jeszcze nie kupił — sprawdź plan na żywych cenach."""
+        checklist = self.checklist
+        if checklist is None or checklist.finished or checklist.hop_index != 0 or checklist.bought:
+            return
+        hop = checklist.route.hops_list[0]
+        if (hop.source_station.lower() != (event.get("StationName") or "").lower()
+                or hop.source_system.lower() != (event.get("StarSystem") or hop.source_system).lower()):
+            return
+        route = self._screen_route(checklist.route)
+        logger.info("SWOT po otwarciu rynku: %s", route.error or route._swot.short())
+        if route.error:
+            self._publish_route(route, hop.source_system, hop.source_station)
+        else:
+            if self.overlay:
+                self.overlay._refresh_now()
+            if self.panel is not None:
+                self.panel.show_route(route)
 
     def _on_materials(self, event: dict):
         """Reaguje na event Materials (start gry) — stan materiałów do zakładki Inżynieria."""

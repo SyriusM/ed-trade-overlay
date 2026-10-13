@@ -705,6 +705,8 @@ class HopCommodity:
     buy_price: int = 0
     sell_price: int = 0
     profit: int = 0
+    supply: Optional[int] = None   # podaż w stacji kupna wg Spansh (None = nieznana)
+    demand: Optional[int] = None   # popyt w stacji sprzedaży wg Spansh
 
 
 @dataclass
@@ -725,6 +727,8 @@ class Hop:
     profit: int = 0
     distance: float = 0.0
     commodities: list = field(default_factory=list)  # HopCommodity, od największego zysku
+    source_updated_at: float = 0.0       # market_updated_at (unix) rynku kupna — do oceny SWOT
+    destination_updated_at: float = 0.0  # market_updated_at (unix) rynku sprzedaży
 
     @property
     def names(self) -> list[str]:
@@ -1414,6 +1418,8 @@ class TradeEngine:
             hop.destination_system = dst.get("system", "")
             hop.destination_station = dst.get("station", "")
             hop.distance = seg.get("distance", 0.0)
+            hop.source_updated_at = src.get("market_updated_at") or 0
+            hop.destination_updated_at = dst.get("market_updated_at") or 0
 
             # system_id64 destynacji hopa (dla Feature B — scoopable check)
             hop._destination_id64 = dst.get("system_id64", "")
@@ -1425,7 +1431,9 @@ class TradeEngine:
                 (HopCommodity(name=c.get("name", ""), amount=c.get("amount", 0),
                               buy_price=c.get("source_commodity", {}).get("buy_price", 0),
                               sell_price=c.get("destination_commodity", {}).get("sell_price", 0),
-                              profit=c.get("total_profit", 0)) for c in comms),
+                              profit=c.get("total_profit", 0),
+                              supply=c.get("source_commodity", {}).get("supply"),
+                              demand=c.get("destination_commodity", {}).get("demand")) for c in comms),
                 key=lambda c: c.profit, reverse=True)
             if hop.commodities:
                 main = hop.commodities[0]
