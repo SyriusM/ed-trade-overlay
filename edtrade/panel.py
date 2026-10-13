@@ -11,6 +11,7 @@ from pathlib import Path
 from tkinter import ttk
 from typing import Optional
 from .config import load_user_config, save_user_config
+from . import materials as mats
 from datetime import datetime, timezone
 from .trade import get_system_info, search_stations, find_material_traders, find_mining_hotspots, find_mineral_buyers, find_commodity_sellers, get_station_market, TradeEngine
 
@@ -57,8 +58,32 @@ def _format_market(market, limit: int = 25) -> list[str]:
     return lines
 
 
+MATERIAL_HINTS = {
+    'Raw': 'trader Raw / planety (zakładka Materiały)',
+    'Manufactured': 'trader Manufactured / sygnały, wraki',
+    'Encoded': 'trader Encoded / skanowanie',
+}
+
+
+def _format_engineering(bp, g_from: int, g_to: int, rolls: int, needs: list, status_line: str) -> list[str]:
+    """Tekst zakladki Inzynieria: braki (z podpowiedzia gdzie zdobyc), potem to co juz masz."""
+    lines = [f'{bp.label} — grade {g_from}→{g_to}, {rolls} roll(e) na grade', status_line, '']
+    missing = [n for n in needs if n.missing]
+    have = [n for n in needs if not n.missing]
+    lines.append(f'BRAKUJE ({len(missing)}):' if missing else 'Masz wszystko potrzebne.')
+    for n in missing:
+        grade = f' G{n.rarity}' if n.rarity else ''
+        lines.append(f'  ✗ {n.name} ({n.type}{grade}): potrzeba {n.need}, masz {n.have}, brakuje {n.missing}'
+                     f' — {MATERIAL_HINTS.get(n.type, "?")}')
+    if have:
+        lines += ['', f'MASZ ({len(have)}):']
+        for n in have:
+            lines.append(f'  ✓ {n.name}: {n.have}/{n.need}')
+    return lines
+
+
 class TradePanel:
-    """Osobne okno z zakładkami (System/Materiały/Mining/Towary/Market/Journey/Ustawienia)."""
+    """Osobne okno z zakładkami (System/Materiały/Mining/Towary/Market/Journey/Inżynieria/Ustawienia)."""
 
     def __init__(self, master: tk.Tk, user_config: Optional[dict] = None, config_path: Optional[Path] = None):
         self.master = master
@@ -190,6 +215,43 @@ class TradePanel:
         self.journey_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
         self.journey_text.insert('1.0', '(wpisz start/cel/zasięg, kliknij Oblicz — może potrwać do 2 min)')
         self.journey_text.config(state=tk.DISABLED)
+
+        self.tab_engineering = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_engineering, text='Inżynieria')
+
+        self._materials_lock = threading.Lock()
+        self._materials_inventory: dict[str, int] = {}
+        self._materials_timestamp = ''
+        self._blueprints: dict[str, 'mats.Blueprint'] = {}
+        self._material_table: dict[str, 'mats.MaterialInfo'] = {}
+
+        self.eng_blueprint_var = tk.StringVar(value='')
+        self.eng_grade_from_var = tk.StringVar(value='1')
+        self.eng_grade_to_var = tk.StringVar(value='5')
+        self.eng_rolls_var = tk.StringVar(value='1')
+        self.eng_entry_frame = ttk.Frame(self.tab_engineering)
+        self.eng_entry_frame.pack(fill=tk.X, padx=10, pady=(10, 4))
+        self.eng_entry_frame.columnconfigure(1, weight=1)
+        ttk.Label(self.eng_entry_frame, text='Blueprint:').grid(row=0, column=0, sticky='w')
+        self.eng_blueprint_combo = ttk.Combobox(self.eng_entry_frame, textvariable=self.eng_blueprint_var, state='readonly')
+        self.eng_blueprint_combo.grid(row=0, column=1, columnspan=6, sticky='ew', padx=(4, 0), pady=2)
+        ttk.Label(self.eng_entry_frame, text='Grade od:').grid(row=1, column=0, sticky='w')
+        ttk.Combobox(self.eng_entry_frame, textvariable=self.eng_grade_from_var, values=['1', '2', '3', '4', '5'],
+                     width=3, state='readonly').grid(row=1, column=1, sticky='w', padx=(4, 10), pady=2)
+        ttk.Label(self.eng_entry_frame, text='do:').grid(row=1, column=2, sticky='w')
+        ttk.Combobox(self.eng_entry_frame, textvariable=self.eng_grade_to_var, values=['1', '2', '3', '4', '5'],
+                     width=3, state='readonly').grid(row=1, column=3, sticky='w', padx=(4, 10))
+        ttk.Label(self.eng_entry_frame, text='Rolle/grade:').grid(row=1, column=4, sticky='w')
+        ttk.Entry(self.eng_entry_frame, textvariable=self.eng_rolls_var, width=4).grid(row=1, column=5, sticky='w', padx=(4, 10))
+        self.eng_btn = ttk.Button(self.eng_entry_frame, text='Oblicz', command=self.refresh_engineering_tab, state=tk.DISABLED)
+        self.eng_btn.grid(row=1, column=6, sticky='e')
+
+        self.eng_text = tk.Text(self.tab_engineering, height=20, width=80, wrap=tk.WORD)
+        self.eng_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
+        self.eng_text.insert('1.0', '(wczytuję listę blueprintów...)')
+        self.eng_text.config(state=tk.DISABLED)
+        # Start z mainloopa: after() z watku roboczego dziala tylko gdy mainloop juz chodzi
+        self.window.after(200, self._start_engineering_data_load)
 
         # --- Zakładka Ustawienia ---
         self.tab_settings = ttk.Frame(self.notebook)
@@ -420,6 +482,80 @@ class TradePanel:
         self.market_station_var.set(station_name)
         if str(self.market_btn['state']) != tk.DISABLED:
             self.refresh_market_tab()
+
+    def set_materials(self, event: dict) -> None:
+        """Wolane z watku watchera (event Materials). Stan pod lockiem — przezyje nawet nieudane after()."""
+        inventory = mats.parse_materials_event(event)
+        with self._materials_lock:
+            self._materials_inventory = inventory
+            self._materials_timestamp = event.get('timestamp', '')
+        try:
+            self.window.after(0, self._materials_updated)
+        except Exception:
+            pass
+
+    def _materials_updated(self) -> None:
+        if str(self.eng_btn['state']) != tk.DISABLED and self.eng_blueprint_var.get():
+            self.refresh_engineering_tab()
+
+    def _start_engineering_data_load(self) -> None:
+        threading.Thread(target=self._engineering_data_worker, daemon=True).start()
+
+    def _engineering_data_worker(self) -> None:
+        """Watek roboczy: pobierz (albo z cache) tabele materialow i blueprinty."""
+        table = mats.load_material_table()
+        blueprints = mats.load_blueprints()
+        try:
+            self.window.after(0, self._engineering_data_done, table, blueprints)
+        except Exception:
+            pass
+
+    def _engineering_data_done(self, table: dict, blueprints: dict) -> None:
+        self._material_table = table
+        self._blueprints = {}
+        for bp in blueprints.values():
+            label = bp.label if bp.label not in self._blueprints else f'{bp.label} ({bp.key})'
+            self._blueprints[label] = bp
+        labels = sorted(self._blueprints)
+        self.eng_blueprint_combo.config(values=labels)
+        if not labels or not table:
+            self._set_eng_text('Nie udało się pobrać danych blueprintów/materiałów (brak sieci i brak cache).')
+            return
+        self.eng_btn.config(state=tk.NORMAL)
+        self._set_eng_text(f'Blueprintów: {len(labels)}. Wybierz blueprint i grade, kliknij Oblicz.\n\n'
+                           + self._materials_status_line())
+
+    def _materials_status_line(self) -> str:
+        with self._materials_lock:
+            count, ts = len(self._materials_inventory), self._materials_timestamp
+        if not ts:
+            return 'Stan materiałów: brak (event Materials pojawia się w journalu przy starcie gry).'
+        return f'Stan materiałów z journala: {ts} ({count} pozycji).'
+
+    def _set_eng_text(self, text: str) -> None:
+        self.eng_text.config(state=tk.NORMAL)
+        self.eng_text.delete('1.0', tk.END)
+        self.eng_text.insert('1.0', text)
+        self.eng_text.config(state=tk.DISABLED)
+
+    def refresh_engineering_tab(self) -> None:
+        """Bez sieci: dane juz w pamieci — liczymy w watku Tk."""
+        bp = self._blueprints.get(self.eng_blueprint_var.get())
+        if bp is None:
+            return
+        try:
+            g_from, g_to = int(self.eng_grade_from_var.get()), int(self.eng_grade_to_var.get())
+            rolls = int(self.eng_rolls_var.get().strip())
+        except ValueError:
+            self._set_eng_text('Błąd: grade i rolle muszą być liczbami.')
+            return
+        if g_from > g_to or rolls < 1:
+            self._set_eng_text('Błąd: "grade od" nie może być większy niż "do", rolle >= 1.')
+            return
+        with self._materials_lock:
+            inventory = dict(self._materials_inventory)
+        needs = mats.missing_for(bp, g_from, g_to, rolls, inventory, self._material_table)
+        self._set_eng_text('\n'.join(_format_engineering(bp, g_from, g_to, rolls, needs, self._materials_status_line())))
 
     def _set_market_text(self, text: str) -> None:
         self.market_text.config(state=tk.NORMAL)

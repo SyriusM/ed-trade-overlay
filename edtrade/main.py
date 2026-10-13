@@ -133,6 +133,7 @@ class EDTradeOverlayApp:
             on_cargo=self._on_cargo,
             on_location=self._on_location,
             on_market=self._on_market,
+            on_materials=self._on_materials,
         )
         self._dock_count = 0
         self._last_system = ""
@@ -334,6 +335,11 @@ class EDTradeOverlayApp:
             )
         except Exception:
             logger.exception("Błąd w _on_market")
+
+    def _on_materials(self, event: dict):
+        """Reaguje na event Materials (start gry) — stan materiałów do zakładki Inżynieria."""
+        if self.panel is not None:
+            self.panel.set_materials(event)
 
     def _apply_bar_visibility(self, window_class: Optional[str]) -> None:
         """Gdy włączone bar_only_when_game_focused: pasek widoczny tylko, gdy aktywne okno ma klasę game_window_class."""
