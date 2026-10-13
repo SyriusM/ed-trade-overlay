@@ -618,7 +618,7 @@ RANK_MODES = {
 }
 
 
-RISK_PROFILES = {"safe": "SAFE — pewne ceny, mniejsze ryzyko", "optimal": "OPTIMAL — zysk ważony pewnością",
+RISK_PROFILES = {"safe": "SAFE — pewne ceny, mniejsze ryzyko", "optimal": "OPTIMAL — drogie towary, ale świeże ceny",
                  "risky": "RISKY — drogie towary, ryzyko za dużą nagrodę"}
 RISK_PROFILE = "optimal"  # ustawiane z configu (Ustawienia → Profil); rankingi czytają je przy każdym wywołaniu
 
@@ -639,18 +639,20 @@ RISKY_REWARD_PER_T = 20_000  # od tylu cr/t ryzyko "się opłaca" w pełni (drog
 
 
 def profile_weight(t, profile: Optional[str] = None) -> float:
-    """Mnożnik zysku wg profilu: OPTIMAL pewność ceny, SAFE (1 − ryzyko)², RISKY — ryzyko tylko za dużą nagrodę.
+    """Mnożnik zysku wg profilu: SAFE (1 − ryzyko)²; OPTIMAL pewność ceny + mała premia za drogi towar;
+    RISKY — ryzyko tylko za dużą nagrodę.
 
     RISKY: im droższy towar (zysk/t → RISKY_REWARD_PER_T), tym mniej liczy się niepewność ceny, plus premia
     do +25% — tani towar ze starymi cenami nie jest wart lotu, drogi tak.
     """
     profile = profile or RISK_PROFILE
+    reward = max(0.0, min(1.0, t.profit_per_unit / RISKY_REWARD_PER_T))
     if profile == "risky":
-        reward = max(0.0, min(1.0, t.profit_per_unit / RISKY_REWARD_PER_T))
         return (t.confidence + (1 - t.confidence) * reward) * (1 + 0.25 * reward)
     if profile == "safe":
         return (1 - trade_risk(t)) ** 2
-    return t.confidence
+    # OPTIMAL: też woli droższe towary (premia do +10%), ale pełna kara za wiek cen — świeższe niż RISKY
+    return t.confidence * (1 + 0.10 * reward)
 
 
 def _rank_key(mode: str, profile: Optional[str] = None):

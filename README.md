@@ -34,8 +34,8 @@ clunky workflow. The game is never automated: the app only reads the journal and
 - `▲S / ▼W / ▲O / ▼T` strengths, weaknesses, opportunities and threats for the selected row.
 - Your hold: `= SELL HERE`, `► SELL THERE` or `■ HOLD` (no buyer, selling at a loss vs what you paid this
   session, or price well below the galactic average).
-- **Risk profile** changes how trades and routes are chosen: SAFE penalises any uncertainty, OPTIMAL weighs
-  profit by price confidence, RISKY accepts stale prices only for expensive goods where the reward pays for the risk.
+- **Risk profile** changes how trades and routes are chosen: SAFE penalises any uncertainty, OPTIMAL prefers
+  valuable goods but only with fresh prices, RISKY accepts stale prices only for expensive goods where the reward pays for the risk.
 
 ![Nearby trades](docs/screenshots/nearby.png)
 

@@ -47,3 +47,13 @@ def test_risky_prefers_expensive_goods_and_stays_careful_with_cheap():
     bulk = _t(8_000, 1)                    # 2.4M za kurs (300 t), świeże
     assert T.rank_trades([[pricey], [bulk]], "total", "risky")[0] is pricey
     assert T.rank_trades([[pricey], [bulk]], "total", "optimal")[0] is bulk
+
+
+def test_optimal_prefers_expensive_only_when_fresh():
+    pricey_fresh, bulk_fresh = _t(25_000, 2, demand=100_000), _t(8_000, 2)
+    pricey_fresh.units = 100            # 2.5M vs 2.4M, oba świeże → droższy
+    assert T.rank_trades([[pricey_fresh], [bulk_fresh]], "total", "optimal")[0] is pricey_fresh
+    pricey_old = _t(25_000, 24 * 2, demand=100_000)
+    pricey_old.units = 100              # ten sam, ale ceny sprzed 2 dni → OPTIMAL woli świeży
+    assert T.rank_trades([[pricey_old], [bulk_fresh]], "total", "optimal")[0] is bulk_fresh
+    assert T.rank_trades([[pricey_old], [bulk_fresh]], "total", "risky")[0] is pricey_old
