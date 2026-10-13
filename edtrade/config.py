@@ -3,6 +3,7 @@
 Plik JSON w ~/.config/ed-trade-overlay/config.json. Puste pole ("") = automat wyłączony.
 Klucz game_window_class = klasa okna gry (kdotool), domyślnie appid Elite Dangerous — niezweryfikowana, odczytaj z logu "Aktywne okno: class=" gdy gra ma fokus.
 Klucz bar_only_when_game_focused = czy pasek ma być widoczny tylko, gdy okno gry ma fokus (domyślnie False, włączyć dopiero po zweryfikowaniu game_window_class).
+Klucze min_profit_per_t / max_data_age_days = minimalny zysk na tonę i maks. wiek cen (handel w okolicy, Towary, Mining).
 Klucze pad_filter (auto/large/all) / max_star_distance_ls (0 = bez limitu) / market_type (all/space/planetary) = filtry rynków (jak "Market minimum pad size" w TCE).
 Klucze bar_alpha / bar_font_scale / panel_font_scale = wygląd (CONTROL jak w TCE): przezroczystość paska i skale czcionek.
 Klucze hotkey_modifier / numpad_slots / global_hotkeys = skróty jak w TCE (opis w hotkeys.py): modyfikator,
@@ -11,6 +12,7 @@ cel każdego klawisza numerycznego 1-9 (pozycja klawisza = miejsce na ekranie), 
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +35,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
     'pad_filter': 'auto',
     'max_star_distance_ls': 5000,
     'market_type': 'all',
+    'min_profit_per_t': 500,
+    'max_data_age_days': 7,
+    'panel_geometry': '1100x700',
+    'panel_page': 'Trasa',
+    'verdict_icons': True,    # ocena okazji: ikonki (= ≈ ▲ ▲▲ ▼ ▼▼)
+    'verdict_labels': True,   # ocena okazji: opis (OPTIMAL, VERY SAFE…)
+    'auto_copy_system': True, # nowa trasa / następny hop → cel do schowka
+    'eddn_enabled': True,     # nasłuch cen na żywo z EDDN (wymaga pakietu pyzmq)
+    'security_weight': 0.5,      # low-sec / anarchia: waga ryzyka w ocenie i rankingu (0 = ignoruj)
+    'avoid_low_security': False, # całkiem pomijaj stacje w systemach Low / Anarchy
+    'risk_profile': 'auto',     # 'auto' / 'safe' / 'optimal' / 'risky' — jak program wybiera okazje i trasy
+    'copy_target': 'station', # co kopiować: 'station', 'system' albo 'both' ("Stacja (System)")
     'hotkey_modifier': 'Shift',
     'numpad_slots': dict(DEFAULT_SLOTS),
     'global_hotkeys': 'auto',
@@ -67,5 +81,8 @@ def save_user_config(config: dict[str, Any], path: Path | None = None) -> None:
     """Zapisz config do pliku JSON, tworząc katalog jeśli trzeba."""
     cfg_path = path if path is not None else CONFIG_PATH
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(cfg_path, 'w', encoding='utf-8') as f:
+    # Zapis przez plik tymczasowy + replace: przerwany zapis nie zostawi uciętego JSON-a (który przy starcie = domyślne)
+    tmp_path = cfg_path.with_name(cfg_path.name + '.tmp')
+    with open(tmp_path, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
+    os.replace(tmp_path, cfg_path)

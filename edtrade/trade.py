@@ -9,7 +9,9 @@ import logging
 import math
 import re
 import subprocess
+import threading
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -269,7 +271,42 @@ def find_mining_hotspots(
 PAD_SIZE_MAP = {1: "small", 2: "medium", 3: "large"}
 
 
+BUYER_CACHE_TTL_S = 600  # 10 min — ceny w Ardent i tak zmieniają się wolniej; przełączanie stron bez sieci
+_buyer_cache: dict[tuple, tuple[float, list]] = {}
+_buyer_cache_lock = threading.Lock()
+
+
+def clear_buyer_cache() -> None:
+    with _buyer_cache_lock:
+        _buyer_cache.clear()
+
+
 def find_mineral_buyers(
+    mineral: str,
+    reference_system: str,
+    max_ly: float = 60.0,
+    min_demand: int = 100,
+    max_days: int = 7,
+    size: int = 10,
+) -> list["MineralBuyer"]:
+    """Kupcy towaru w okolicy (Ardent /imports) z pamięcią podręczną na 10 min.
+
+    Puste wyniki nie są zapamiętywane (mogą być błędem sieci — następne wywołanie spróbuje znowu).
+    """
+    key = (mineral.lower(), reference_system.lower(), float(max_ly), int(min_demand), int(max_days), int(size))
+    now = time.time()
+    with _buyer_cache_lock:
+        hit = _buyer_cache.get(key)
+        if hit is not None and now - hit[0] < BUYER_CACHE_TTL_S:
+            return list(hit[1])
+    buyers = _find_mineral_buyers_uncached(mineral, reference_system, max_ly, min_demand, max_days, size)
+    if buyers:
+        with _buyer_cache_lock:
+            _buyer_cache[key] = (now, list(buyers))
+    return buyers
+
+
+def _find_mineral_buyers_uncached(
     mineral: str,
     reference_system: str,
     max_ly: float = 60.0,
@@ -421,6 +458,28 @@ class StationMarket:
     error: str = ""
 
 
+def market_from_market_json(data: dict, symbol_by_id: dict[int, str]) -> StationMarket:
+    """Market.json zapisany przez grę po otwarciu rynku — dokładne ceny TEJ stacji, teraz (lepsze niż API)."""
+    from datetime import datetime, timezone
+    market = StationMarket(system_name=data.get("StarSystem", ""), station_name=data.get("StationName", ""),
+                           updated_at=data.get("timestamp") or datetime.now(timezone.utc).isoformat())
+    for raw in data.get("Items") or []:
+        name = symbol_by_id.get(int(raw.get("id") or 0))
+        if not name:
+            continue
+        item = MarketItem(name=name, buy_price=raw.get("BuyPrice") or 0, sell_price=raw.get("SellPrice") or 0,
+                          stock=raw.get("Stock") or 0, demand=raw.get("Demand") or 0,
+                          mean_price=raw.get("MeanPrice") or 0, updated_at=market.updated_at)
+        if item.stock > 0 and item.buy_price > 0:
+            market.exports.append(item)
+        # Eksportowane towary mają w danych popyt 1 (placeholder) — to nie jest realny popyt
+        if item.demand > 1 and item.sell_price > 0:
+            market.imports.append(item)
+    market.exports.sort(key=lambda i: i.buy_price - i.mean_price)
+    market.imports.sort(key=lambda i: i.sell_price, reverse=True)
+    return market
+
+
 def get_station_market(system_name: str, station_name: str) -> StationMarket:
     """Rynek stacji z Ardent /v2/system/name/<system>/commodities, przefiltrowany po nazwie stacji.
 
@@ -464,7 +523,8 @@ def get_station_market(system_name: str, station_name: str) -> StationMarket:
         )
         if item.stock > 0 and item.buy_price > 0:
             market.exports.append(item)
-        if item.demand > 0 and item.sell_price > 0:
+        # Eksportowane towary mają w danych popyt 1 (placeholder) — to nie jest realny popyt
+        if item.demand > 1 and item.sell_price > 0:
             market.imports.append(item)
 
     market.exports.sort(key=lambda i: i.buy_price - i.mean_price)
@@ -472,6 +532,35 @@ def get_station_market(system_name: str, station_name: str) -> StationMarket:
     logger.info("get_station_market: %s/%s — %d exports, %d imports",
                 system_name, market.station_name, len(market.exports), len(market.imports))
     return market
+
+
+def age_hours(updated_at) -> Optional[float]:
+    """Wiek cen w godzinach: epoch (Spansh) albo ISO 8601 (Ardent); None gdy brak/nieczytelne."""
+    from datetime import datetime, timezone
+    if not updated_at:
+        return None
+    if isinstance(updated_at, (int, float)):
+        return max(0.0, (time.time() - float(updated_at)) / 3600)
+    try:
+        ts = datetime.fromisoformat(str(updated_at).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - ts).total_seconds() / 3600)
+
+
+def freshness_factor(hours: Optional[float]) -> float:
+    """Pewność, że cena jeszcze obowiązuje (przybliżenie): ≤6 h 100%, ≤24 h 90%, ≤3 d 75%, starsze 50%."""
+    if hours is None:
+        return 0.7
+    if hours <= 6:
+        return 1.0
+    if hours <= 24:
+        return 0.9
+    if hours <= 72:
+        return 0.75
+    return 0.5
 
 
 @dataclass
@@ -491,6 +580,7 @@ class NearbyTrade:
     station_type: str = ""
     updated_at: str = ""
     travel_s: float = 0.0       # szacowany czas dolotu i dokowania
+    security: str = ""          # bezpieczeństwo systemu kupca: High / Medium / Low / Anarchy ("" = nieznane)
 
     @property
     def profit_per_unit(self) -> int:
@@ -504,6 +594,23 @@ class NearbyTrade:
     def profit_per_hour(self) -> float:
         return self.total_profit * 3600 / self.travel_s if self.travel_s else 0.0
 
+    @property
+    def age_hours(self) -> Optional[float]:
+        return age_hours(self.updated_at)
+
+    @property
+    def confidence(self) -> float:
+        return freshness_factor(self.age_hours)
+
+    @property
+    def expected_total(self) -> float:
+        """Zysk ważony pewnością ceny — stare dane mogą już nie obowiązywać na miejscu."""
+        return self.total_profit * self.confidence
+
+    @property
+    def expected_per_hour(self) -> float:
+        return self.profit_per_hour * self.confidence
+
 
 # Tryby rankingu handlu w okolicy (jak sortowanie zysku w Trade Advisor TCE + "czas to pieniądz")
 RANK_MODES = {
@@ -513,41 +620,181 @@ RANK_MODES = {
 }
 
 
-def _rank_key(mode: str):
+RISK_PROFILES = {"auto": "AUTO — profil dobierany do każdej okazji", "safe": "SAFE — pewne ceny, mniejsze ryzyko", "optimal": "OPTIMAL — drogie towary, ale świeże ceny",
+                 "risky": "RISKY — drogie towary, ryzyko za dużą nagrodę"}
+RISK_PROFILE = "auto"  # ustawiane z configu (Ustawienia → Profil); rankingi czytają je przy każdym wywołaniu
+
+
+def set_risk_profile(profile: str) -> None:
+    global RISK_PROFILE
+    RISK_PROFILE = profile if profile in RISK_PROFILES else "auto"
+
+
+def trade_risk(t) -> float:
+    """Ryzyko okazji 0–1 (wiek cen, płytki popyt, długi lot, bezpieczeństwo) — to samo, co w ocenie SAFE/RISKY."""
+    from . import assess
+    return assess.combine(assess.age_risk(t.age_hours), assess.demand_risk(t.demand, t.units),
+                          0.15 if t.travel_s > assess.LONG_TRIP_S else 0.0, security_risk(t.security))
+
+
+RISKY_REWARD_PER_T = 20_000  # od tylu cr/t ryzyko "się opłaca" w pełni (drogie towary)
+
+
+def auto_profile(t) -> str:
+    """AUTO: profil dobrany do SWOT tej okazji — low-sec / płytki popyt → SAFE; drogi towar ze starszymi cenami →
+    RISKY (ryzyko się opłaca); reszta (świeże ceny) → OPTIMAL."""
+    from . import assess
+    if security_risk(t.security) >= 0.15 or assess.demand_risk(t.demand, t.units) >= 0.3:
+        return "safe"
+    if assess.age_risk(t.age_hours) >= 0.4 and t.profit_per_unit >= RISKY_REWARD_PER_T / 2:
+        return "risky"
+    return "optimal"
+
+
+def profile_weight(t, profile: Optional[str] = None) -> float:
+    """Mnożnik zysku wg profilu: SAFE (1 − ryzyko)²; OPTIMAL pewność ceny + mała premia za drogi towar;
+    RISKY — ryzyko tylko za dużą nagrodę; AUTO — profil dobrany do tej okazji. Bezpieczeństwo systemu
+    (waga z Ustawień) obniża wynik w każdym profilu.
+    """
+    profile = profile or RISK_PROFILE
+    if profile == "auto":
+        profile = auto_profile(t)
+    reward = max(0.0, min(1.0, t.profit_per_unit / RISKY_REWARD_PER_T))
+    if profile == "safe":
+        return (1 - trade_risk(t)) ** 2  # trade_risk zawiera już bezpieczeństwo
+    security = 1 - security_risk(t.security)
+    if profile == "risky":
+        return (t.confidence + (1 - t.confidence) * reward) * (1 + 0.25 * reward) * security
+    # OPTIMAL: też woli droższe towary (premia do +10%), ale pełna kara za wiek cen — świeższe niż RISKY
+    return t.confidence * (1 + 0.10 * reward) * security
+
+
+def _rank_key(mode: str, profile: Optional[str] = None):
+    # Rankingi liczą zysk ważony profilem ryzyka (domyślnie OPTIMAL = ważony świeżością cen)
+    w = lambda t: profile_weight(t, profile)
     if mode == "total":
-        return lambda t: (t.total_profit, -t.travel_s)
+        return lambda t: (t.total_profit * w(t), -t.travel_s)
     if mode == "time":
-        return lambda t: (-t.travel_s, t.total_profit)
-    return lambda t: (t.profit_per_hour, t.total_profit)
+        return lambda t: (-t.travel_s, t.total_profit * w(t))
+    return lambda t: (t.profit_per_hour * w(t), t.total_profit * w(t))
+
+
+SECURITY_RISK = {"high": 0.0, "medium": 0.1, "low": 0.35, "anarchy": 0.6}
+SECURITY_WEIGHT = 0.5      # Ustawienia: jak mocno low-sec obniża ocenę (0 = ignoruj, 1 = pełne ryzyko)
+AVOID_LOW_SECURITY = False  # Ustawienia: całkiem pomijaj stacje w systemach Low / Anarchy
+_security_cache: dict[tuple, tuple[float, dict]] = {}
+_security_lock = threading.Lock()
+_security_fetching: dict[tuple, threading.Lock] = {}
+
+
+def set_security_prefs(weight: float, avoid_low: bool) -> None:
+    global SECURITY_WEIGHT, AVOID_LOW_SECURITY
+    SECURITY_WEIGHT = max(0.0, min(1.0, float(weight)))
+    AVOID_LOW_SECURITY = bool(avoid_low)
+
+
+def security_near(reference_system: str, max_ly: float) -> dict[str, str]:
+    """{system lowercase: "High"/"Medium"/"Low"/"Anarchy"} w zasięgu — Spansh /api/systems/search (strony po 500),
+    pamięć podręczna 6 h na (system, zasięg). Błąd sieci → {} (bez kary, nie zgadujemy)."""
+    key = (reference_system.lower(), round(float(max_ly)))
+    with _security_lock:
+        fetch_lock = _security_fetching.setdefault(key, threading.Lock())
+    with fetch_lock:  # równoległe wywołania (OKOLICA, ładownia, szybka trasa) czekają na jedno zapytanie
+        with _security_lock:
+            hit = _security_cache.get(key)
+            if hit is not None and time.time() - hit[0] < 6 * 3600:
+                return hit[1]
+        return _fetch_security(key, reference_system, max_ly)
+
+
+def _fetch_security(key: tuple, reference_system: str, max_ly: float) -> dict[str, str]:
+    result: dict[str, str] = {}
+    try:
+        for page in range(4):
+            resp = requests.post("https://spansh.co.uk/api/systems/search", timeout=20, json={
+                "filters": {"distance": {"min": "0", "max": str(max_ly)}},
+                "sort": [{"distance": {"direction": "asc"}}], "size": 500, "page": page,
+                "reference_system": reference_system})
+            resp.raise_for_status()
+            data = resp.json()
+            for r in data.get("results") or []:
+                if r.get("name") and r.get("security"):
+                    result[r["name"].lower()] = r["security"]
+            if (page + 1) * 500 >= int(data.get("count") or 0):
+                break
+    except Exception as e:
+        logger.warning("Bezpieczeństwo systemów (Spansh) niedostępne: %s", e)
+        return {}
+    with _security_lock:
+        _security_cache[key] = (time.time(), result)
+    logger.info("Bezpieczeństwo: %d systemów w %.0f ly od %s", len(result), max_ly, reference_system)
+    return result
+
+
+def security_risk(security: str) -> float:
+    """Ryzyko z bezpieczeństwa systemu (piraci, interdykcje) × waga z Ustawień."""
+    return SECURITY_RISK.get((security or "").lower(), 0.0) * SECURITY_WEIGHT
+
+
+PRICE_DB = None  # edtrade.price_db.PriceDB z EDDN — ustawiane przez main, gdy nasłuch działa
+
+
+def fresher_price(system: str, station: str, commodity: str, updated_at) -> Optional["object"]:
+    """Cena z lokalnej bazy EDDN, jeśli jest świeższa niż dane API (inaczej None)."""
+    if PRICE_DB is None:
+        return None
+    rec = PRICE_DB.get(system, station, commodity)
+    if rec is None:
+        return None
+    hours = age_hours(updated_at)
+    api_epoch = time.time() - hours * 3600 if hours is not None else 0.0
+    return rec if rec.updated_at > api_epoch + 60 else None
 
 
 def candidate_trades(commodity: str, reference_system: str, units: int, buy_price: int, market_filter,
-                     max_ly: float = 40.0, exclude_market: str = "", jump_range: float = 30.0) -> list[NearbyTrade]:
+                     max_ly: float = 40.0, exclude_market: str = "", jump_range: float = 30.0,
+                     security: Optional[dict] = None) -> list[NearbyTrade]:
     """Wszyscy opłacalni kupcy w zasięgu (po filtrze) — wybór najlepszego zależy od trybu rankingu."""
     trades = []
-    for b in find_mineral_buyers(commodity, reference_system, max_ly=max_ly, min_demand=1, size=100):
+    security = security or {}
+    for b in find_mineral_buyers(commodity, reference_system, max_ly=max_ly, min_demand=1,
+                                 max_days=market_filter.max_data_age_days, size=100):
         if not market_filter.accepts(b.pad_size, b.distance_to_arrival, b.station_type):
             continue
         if exclude_market and b.station_name.lower() == exclude_market.lower() and b.system_name.lower() == reference_system.lower():
             continue
-        trade = NearbyTrade(commodity=commodity, buy_price=buy_price, units=min(units, b.demand),
-                            sell_station=b.station_name, sell_system=b.system_name, sell_price=b.sell_price,
-                            demand=b.demand, distance=b.distance, distance_to_arrival=b.distance_to_arrival,
-                            pad_size=b.pad_size, station_type=b.station_type, updated_at=b.updated_at,
-                            travel_s=travel_seconds(b.distance, b.distance_to_arrival, jump_range))
-        if trade.profit_per_unit > 0 and trade.units > 0:
+        sec = security.get(b.system_name.lower(), "")
+        if AVOID_LOW_SECURITY and sec.lower() in ("low", "anarchy"):
+            continue
+        sell_price, demand, updated_at = b.sell_price, b.demand, b.updated_at
+        fresher = fresher_price(b.system_name, b.station_name, commodity, b.updated_at)
+        if fresher is not None:  # bez modyfikacji b — obiekty kupców są współdzielone z pamięcią podręczną
+            if fresher.sell_price <= 0 or fresher.demand <= 1:
+                continue  # EDDN: stacja już tego nie skupuje
+            sell_price, demand = fresher.sell_price, fresher.demand
+            updated_at = datetime.fromtimestamp(fresher.updated_at, timezone.utc).isoformat()
+        trade = NearbyTrade(commodity=commodity, buy_price=buy_price, units=min(units, demand),
+                            sell_station=b.station_name, sell_system=b.system_name, sell_price=sell_price,
+                            demand=demand, distance=b.distance, distance_to_arrival=b.distance_to_arrival,
+                            pad_size=b.pad_size, station_type=b.station_type, updated_at=updated_at,
+                            travel_s=travel_seconds(b.distance, b.distance_to_arrival, jump_range), security=sec)
+        # Ładunek w ładowni (buy_price 0) — liczy się każda sprzedaż; zakup tutaj — co najmniej min. zysk/t
+        min_profit = market_filter.min_profit_per_t if buy_price else 1
+        if trade.profit_per_unit >= max(1, min_profit) and trade.units > 0:
             trades.append(trade)
     return trades
 
 
-def pick_best(candidates: list[NearbyTrade], mode: str = "per_hour") -> Optional[NearbyTrade]:
-    return max(candidates, key=_rank_key(mode)) if candidates else None
+def pick_best(candidates: list[NearbyTrade], mode: str = "per_hour",
+              profile: Optional[str] = None) -> Optional[NearbyTrade]:
+    return max(candidates, key=_rank_key(mode, profile)) if candidates else None
 
 
-def rank_trades(candidates_per_commodity: list[list[NearbyTrade]], mode: str = "per_hour") -> list[NearbyTrade]:
-    """Jeden wiersz na towar (najlepszy kupiec w danym trybie), posortowane wg trybu."""
-    best = [b for b in (pick_best(c, mode) for c in candidates_per_commodity) if b is not None]
-    best.sort(key=_rank_key(mode), reverse=True)
+def rank_trades(candidates_per_commodity: list[list[NearbyTrade]], mode: str = "per_hour",
+                profile: Optional[str] = None) -> list[NearbyTrade]:
+    """Jeden wiersz na towar (najlepszy kupiec w danym trybie i profilu ryzyka), posortowane."""
+    best = [b for b in (pick_best(c, mode, profile) for c in candidates_per_commodity) if b is not None]
+    best.sort(key=_rank_key(mode, profile), reverse=True)
     return best
 
 
@@ -567,19 +814,34 @@ def supercruise_seconds(distance_to_arrival_ls: float) -> float:
     return 35.0 + 13.0 * math.sqrt(max(distance_to_arrival_ls, 0.0) / 100.0)
 
 
-def travel_seconds(distance_ly: float, distance_to_arrival_ls: float, jump_range: float = 30.0) -> float:
-    """Przybliżony czas od odlotu do zadokowania u kupca — podstawa rankingu CR/H (czas to pieniądz)."""
+PILOT_FACTOR = 1.0  # Twoje tempo z realnych kursów (edtrade/pilot.py) — ustawiane przez main
+
+
+def set_pilot_factor(factor: float) -> None:
+    global PILOT_FACTOR
+    PILOT_FACTOR = max(0.5, min(3.0, float(factor)))
+
+
+def travel_seconds(distance_ly: float, distance_to_arrival_ls: float, jump_range: float = 30.0,
+                   calibrated: bool = True) -> float:
+    """Czas od odlotu do zadokowania u kupca — podstawa rankingu CR/H (czas to pieniądz).
+
+    calibrated=True: ogólny szacunek × Twoje tempo z journala; False: sam szacunek (do kalibracji).
+    """
     jumps = 0 if distance_ly < 0.5 else math.ceil(distance_ly / max(jump_range, 5.0))
-    return JUMP_SECONDS * jumps + supercruise_seconds(distance_to_arrival_ls) + DOCKING_SECONDS
+    base = JUMP_SECONDS * jumps + supercruise_seconds(distance_to_arrival_ls) + DOCKING_SECONDS
+    return base * (PILOT_FACTOR if calibrated else 1.0)
 
 
 def _parallel_candidates(jobs: list[dict], reference_system: str, market_filter, max_ly: float,
                          exclude_market: str = "", workers: int = 6, jump_range: float = 30.0) -> list[list[NearbyTrade]]:
     from concurrent.futures import ThreadPoolExecutor
     _ardent_commodity_names()  # wspólna lista nazw — pobrana raz, zanim ruszą wątki
+    security = security_near(reference_system, max_ly)  # jedno zapytanie dla wszystkich kupców w zasięgu
     with ThreadPoolExecutor(max_workers=workers) as pool:
         results = list(pool.map(lambda j: candidate_trades(j["name"], reference_system, j["units"], j["buy_price"],
-                                                           market_filter, max_ly, exclude_market, jump_range), jobs))
+                                                           market_filter, max_ly, exclude_market, jump_range,
+                                                           security), jobs))
     for job, cands in zip(jobs, results):
         for trade in cands:
             trade.stock = job.get("stock", 0)
@@ -614,6 +876,115 @@ def nearby_trades_from_market(market: "StationMarket", capacity: int, market_fil
 def best_sales_for_cargo(cargo: list[dict], reference_system: str, market_filter, max_ly: float = 40.0,
                          workers: int = 6, jump_range: float = 30.0, mode: str = "per_hour") -> list[NearbyTrade]:
     return rank_trades(cargo_candidates(cargo, reference_system, market_filter, max_ly, workers, jump_range), mode)
+
+
+def _market_symbol(item: dict) -> str:
+    """Symbol towaru z Market.json: "$gold_name;" → "gold"."""
+    name = item.get("Name", "")
+    if name.startswith("$") and name.endswith("_name;"):
+        name = name[1:-6]
+    return name
+
+
+def refill_hop_from_market(hop: "Hop", live_items: list[dict], dest_imports: list["MarketItem"], capacity: int,
+                           capital: int, names: Optional[dict[str, str]] = None, keep_load: bool = False) -> None:
+    """Ładunek hopu od nowa wg rynku z gry (Market.json), nie wg danych Spansh.
+
+    Spansh liczy na danych sprzed godzin — proponuje towary, których już nie ma (albo jest 1 t). Z bieżącego
+    rynku bierzemy tylko to, co jest na stanie, i dopełniamy ładownię wg marży do celu hopu: zachłannie
+    (największa marża pierwsza), ile pozwala zapas, popyt w celu, wolne miejsce i kredyty.
+    Ceny w celu: Ardent (dest_imports), a gdy ich brak — ceny sprzedaży ze Spansh dla towarów hopu.
+    keep_load=True: ładunek hopu zostaje, dobieramy tylko na wolne miejsce (inne towary).
+    """
+    names = names or {}
+    sell_at = {_norm_commodity(i.name): (i.sell_price, i.demand) for i in dest_imports if i.sell_price > 0}
+    for c in hop.commodities:
+        sell_at.setdefault(_norm_commodity(c.name), (c.sell_price, capacity))
+    offers = []
+    for item in live_items:
+        buy, stock = int(item.get("BuyPrice") or 0), int(item.get("Stock") or 0)
+        if buy <= 0 or stock <= 0:
+            continue
+        symbol = _market_symbol(item)
+        display = names.get(symbol.lower()) or item.get("Name_Localised") or symbol
+        dest = next((sell_at[k] for k in (_norm_commodity(symbol), _norm_commodity(display)) if k in sell_at), None)
+        if dest and dest[0] > buy:
+            offers.append((dest[0] - buy, display, buy, dest[0], min(stock, dest[1])))
+    space, money, load = int(capacity), int(capital), []
+    if keep_load:
+        load = list(hop.commodities)
+        space -= sum(c.amount for c in load)
+        money -= sum(c.amount * c.buy_price for c in load)
+        taken = {_norm_commodity(c.name) for c in load}
+        offers = [o for o in offers if _norm_commodity(o[1]) not in taken]
+    for margin, display, buy, sell, limit in sorted(offers, reverse=True):
+        units = min(limit, space, money // buy)
+        if units > 0:
+            load.append(HopCommodity(display, units, buy, sell, units * margin))
+            space -= units
+            money -= units * buy
+    hop.commodities = sorted(load, key=lambda c: c.profit, reverse=True)
+    main = hop.commodities[0] if load else HopCommodity()
+    hop.commodity, hop.buy_price, hop.sell_price = main.name, main.buy_price, main.sell_price
+    hop.amount = sum(c.amount for c in load)
+    hop.profit = sum(c.profit for c in load)
+
+
+def apply_live_market(route: "TradeRoute", hop_index: int, live_items: list[dict], dest_imports: list["MarketItem"],
+                      capacity: int, capital: int, names: Optional[dict[str, str]] = None) -> bool:
+    """Popraw hop `hop_index` trasy wg rynku z gry; zwraca True, gdy ładunek się zmienił."""
+    hop = route.hops_list[hop_index]
+    before = [(c.name, c.amount) for c in hop.commodities]
+    old_profit = hop.profit
+    refill_hop_from_market(hop, live_items, dest_imports, capacity, capital, names)
+    if [(c.name, c.amount) for c in hop.commodities] == before:
+        return False
+    route.total_profit += hop.profit - old_profit
+    if not hop.commodities:
+        route.error = "Na tym rynku nie ma już opłacalnych towarów z trasy (dane Spansh nieaktualne)"
+    if hop_index == 0:
+        route.buy_item, route.buy_price, route.sell_price = hop.commodity, hop.buy_price, hop.sell_price
+        route.buy_quantity = hop.commodities[0].amount if hop.commodities else 0
+        route.cargo_used = hop.amount
+        route.profit_per_unit = hop.sell_price - hop.buy_price if hop.commodities else 0
+    logger.info("Rynek z gry: hop %d %s → %s (zysk %d → %d)", hop_index + 1, before,
+                [(c.name, c.amount) for c in hop.commodities], old_profit, hop.profit)
+    return True
+
+
+def top_up_route(route: "TradeRoute", capacity: int, capital: int, names: Optional[dict[str, str]] = None,
+                 market_fn: Optional[Callable[[str, str], "StationMarket"]] = None) -> int:
+    """Żaden odcinek trasy nie leci pusty ani w połowie pusty: do ładunku Spansh dobieramy (wg danych Ardent)
+    towary opłacalne do sprzedaży na następnym przystanku — także na hopach dolotowych, gdzie Spansh nic nie wiezie.
+    Zwraca liczbę dopełnionych hopów."""
+    market_fn = market_fn or get_station_market
+    markets: dict[tuple[str, str], "StationMarket"] = {}
+
+    def market(system: str, station: str) -> "StationMarket":
+        key = (system.lower(), station.lower())
+        if key not in markets:
+            markets[key] = market_fn(system, station)
+        return markets[key]
+
+    changed = 0
+    for i, hop in enumerate(route.hops_list):
+        if hop.amount >= capacity:
+            continue
+        src = market(hop.source_system, hop.source_station)
+        dst = market(hop.destination_system, hop.destination_station)
+        items = [{"Name": e.name, "BuyPrice": e.buy_price, "Stock": e.stock} for e in src.exports]
+        before, old_profit = hop.amount, hop.profit
+        refill_hop_from_market(hop, items, dst.imports, capacity, capital, names, keep_load=True)
+        if hop.amount == before:
+            continue
+        changed += 1
+        route.total_profit += hop.profit - old_profit
+        if i == 0:
+            route.buy_item, route.buy_price, route.sell_price = hop.commodity, hop.buy_price, hop.sell_price
+            route.buy_quantity = hop.commodities[0].amount
+            route.cargo_used = hop.amount
+        logger.info("Dopełnienie hopu %d: %d t → %d t (zysk %d → %d)", i + 1, before, hop.amount, old_profit, hop.profit)
+    return changed
 
 
 SERVICE_FIELDS = (
@@ -698,8 +1069,22 @@ class JourneyPlan:
 
 
 @dataclass
+class HopCommodity:
+    """Jeden towar z ładunku hopu — Spansh dopełnia ładownię kilkoma towarami."""
+    name: str = ""
+    amount: int = 0
+    buy_price: int = 0
+    sell_price: int = 0
+    profit: int = 0
+
+
+@dataclass
 class Hop:
-    """Jeden hop (skok) w trasie wieloetapowej."""
+    """Jeden hop (skok) w trasie wieloetapowej.
+
+    commodity/buy_price/sell_price to towar dający największy zysk; amount i profit liczą cały ładunek
+    (wszystkie towary z `commodities`).
+    """
     source_system: str = ""
     source_station: str = ""
     destination_system: str = ""
@@ -710,6 +1095,20 @@ class Hop:
     sell_price: int = 0
     profit: int = 0
     distance: float = 0.0
+    src_updated_at: float = 0.0   # epoch s — kiedy Spansh ostatnio widział ceny stacji kupna
+    dst_updated_at: float = 0.0   # … i stacji sprzedaży
+    dst_ls: float = 0.0           # odległość stacji celu od gwiazdy (ls), gdy znana (szybka trasa / Ardent)
+    commodities: list = field(default_factory=list)  # HopCommodity, od największego zysku
+
+    @property
+    def names(self) -> list[str]:
+        return [c.name for c in self.commodities] or ([self.commodity] if self.commodity else [])
+
+    def cargo_text(self, limit: int = 2) -> str:
+        """Krótki opis ładunku: 'Gold ×400' albo 'Cobalt ×140 + Polymers ×172 +2' (reszta jako licznik)."""
+        items = self.commodities or ([HopCommodity(self.commodity, self.amount)] if self.commodity else [])
+        text = " + ".join(f"{c.name} ×{c.amount}" for c in items[:limit])
+        return text + (f" +{len(items) - limit}" if len(items) > limit else "")
 
 
 @dataclass
@@ -748,9 +1147,10 @@ class TradeRoute:
             lines = [f"{self.source_system}/{self.source_station} → {self.destination_system} ({self.hops} hop{'y' if self.hops != 1 else ''})"]
             for i, hop in enumerate(self.hops_list):
                 lines.append(f"  Hop {i + 1}: {hop.source_station} → {hop.destination_station}")
-                if hop.commodity:
+                for c in hop.commodities or ([HopCommodity(hop.commodity, hop.amount, hop.buy_price, hop.sell_price,
+                                                            hop.profit)] if hop.commodity else []):
                     lines.append(
-                        f"    {hop.commodity} x{hop.amount} @ {hop.buy_price:,} → {hop.sell_price:,} (zysk {hop.profit:,})"
+                        f"    {c.name} x{c.amount} @ {c.buy_price:,} → {c.sell_price:,} (zysk {c.profit:,})"
                     )
                 dist = f" {hop.distance:.1f} ly" if hop.distance else ""
                 lines[-1] += dist
@@ -914,6 +1314,11 @@ def ship_needs_large_pad(ship: str) -> bool:
     return (ship or "").lower() in LARGE_PAD_SHIPS
 
 
+# Kapitał, gdy saldo gracza nieznane — ograniczeniem ma być ładownia, nie kredyty.
+# (Stare domyślne 100 000 cr starczało na 2 t złota, więc trasa kończyła się na "Gold ×2".)
+UNLIMITED_CAPITAL = 10_000_000_000
+
+
 class TradeEngine:
     """Wywołuje Trade Dangerous i parsuje wynik."""
 
@@ -922,19 +1327,23 @@ class TradeEngine:
         td_dir: Optional[Path] = None,
         td_venv: Optional[Path] = None,
         capacity: float = 304.0,
-        credits: int = 100_000,
+        credits: Optional[int] = None,
         ly_per: float = 32.0,
     ):
         self.td_dir = td_dir or DEFAULT_TD_DIR
         self.py_path = str((self.td_dir / td_venv).resolve()) if td_venv else "python3"
         self.trade_script = str((self.td_dir / "trade.py").resolve())
         self.capacity = capacity
-        self.credits = credits
+        self.credits = credits  # saldo gracza; None/0 = nieznane → UNLIMITED_CAPITAL
         self.ly_per = ly_per
         self.requires_large_pad = False
         self.max_star_ls = 5000.0  # 0 = bez limitu
         self._last_result: Optional[TradeRoute] = None
         self._polling_callback: Optional[Callable[[int], None]] = None
+
+    @property
+    def capital(self) -> int:
+        return int(self.credits) if self.credits and self.credits > 0 else UNLIMITED_CAPITAL
 
     def set_polling_callback(self, callback: Optional[Callable[[int], None]]) -> None:
         """Ustaw funkcję wywoływaną co 30s podczas pollingu Spansh."""
@@ -964,7 +1373,7 @@ class TradeEngine:
             "--capacity",
             str(cap),
             "--credits",
-            str(self.credits),
+            str(self.capital),
             "--ly-per",
             str(ly),
             "--routes",
@@ -1116,7 +1525,7 @@ class TradeEngine:
         payload = {
             "system": system,
             "station": station,
-            "starting_capital": self.credits,
+            "starting_capital": self.capital,
             "max_cargo": int(cap),
             "max_hops": max_hops,
             "max_hop_distance": ly,
@@ -1354,11 +1763,7 @@ class TradeEngine:
 
         # Pierwszy segment: źródło = stacja startowa
         first = results[0]
-        first_src = first.get("source", {})
         first_dest = first.get("destination", {})
-
-        # Wyciągnij market_updated_at ze źródła pierwszego hopu (Feature A)
-        route._market_freshness_ts = first_src.get("market_updated_at", 0)
 
         # Ostatni segment: destination = końcówka trasy
         last = results[-1]
@@ -1379,6 +1784,8 @@ class TradeEngine:
             hop.destination_system = dst.get("system", "")
             hop.destination_station = dst.get("station", "")
             hop.distance = seg.get("distance", 0.0)
+            hop.src_updated_at = src.get("market_updated_at") or 0.0
+            hop.dst_updated_at = dst.get("market_updated_at") or 0.0
 
             # system_id64 destynacji hopa (dla Feature B — scoopable check)
             hop._destination_id64 = dst.get("system_id64", "")
@@ -1387,25 +1794,30 @@ class TradeEngine:
             logger.debug("Hop %d: dest=%s/%s id64=%s", len(route.hops_list),
                          dst.get("system","?"), dst.get("station","?"), hop._destination_id64)
 
-            if comms:
-                c = comms[0]
-                hop.commodity = c.get("name", "")
-                hop.amount = c.get("amount", 0)
-                hop.buy_price = c.get("source_commodity", {}).get("buy_price", 0)
-                hop.sell_price = c.get("destination_commodity", {}).get("sell_price", 0)
-                hop.profit = c.get("total_profit", 0)
+            # Spansh dopełnia ładownię kilkoma towarami (np. 1 t srebra + 140 t kobaltu) — liczy się cały ładunek
+            hop.commodities = sorted(
+                (HopCommodity(name=c.get("name", ""), amount=c.get("amount", 0),
+                              buy_price=c.get("source_commodity", {}).get("buy_price", 0),
+                              sell_price=c.get("destination_commodity", {}).get("sell_price", 0),
+                              profit=c.get("total_profit", 0)) for c in comms),
+                key=lambda c: c.profit, reverse=True)
+            if hop.commodities:
+                main = hop.commodities[0]
+                hop.commodity, hop.buy_price, hop.sell_price = main.name, main.buy_price, main.sell_price
+                hop.amount = sum(c.amount for c in hop.commodities)
+                hop.profit = sum(c.profit for c in hop.commodities)
 
             route.hops_list.append(hop)
 
         route.hops = num_hops
         route.jumps = num_hops
-        route.cargo_used = results[0].get("commodities", [{}])[0].get("amount", 0)
+        route.cargo_used = route.hops_list[0].amount if route.hops_list else 0
 
         # Ustawiamy pola legacy (pierwszy hop)
         if route.hops_list:
             f = route.hops_list[0]
             route.buy_item = f.commodity
-            route.buy_quantity = f.amount
+            route.buy_quantity = f.commodities[0].amount if f.commodities else f.amount
             route.buy_price = f.buy_price
             route.sell_price = f.sell_price
             route.total_profit = route.hops_list[-1].profit if len(route.hops_list) == 1 else route.total_profit

@@ -58,7 +58,7 @@ def _find_journal_dir() -> Optional[Path]:
     return None
 
 # Pola interesujących nas eventów
-INTERESTING_EVENTS = {"Docked", "Loadout", "StartedSession", "Location", "Cargo", "Market", "Materials", "MarketBuy", "MarketSell"}
+INTERESTING_EVENTS = {"Docked", "Loadout", "StartedSession", "Location", "Cargo", "Market", "Materials", "MarketBuy", "MarketSell", "LoadGame"}
 
 
 class JournalWatcher:
@@ -74,6 +74,7 @@ class JournalWatcher:
         on_market: Optional[Callable] = None,
         on_materials: Optional[Callable] = None,
         on_trade: Optional[Callable] = None,
+        on_session: Optional[Callable] = None,
     ):
         self.journal_dir = journal_dir
         if self.journal_dir is None:
@@ -85,10 +86,13 @@ class JournalWatcher:
         self.on_market = on_market
         self.on_materials = on_materials
         self.on_trade = on_trade
+        self.on_session = on_session  # LoadGame — start sesji gry (podsumowanie zarobków)
         self._latest_file: Optional[Path] = None
         self._file_pos: int = 0
         self._running = False
         self._player_cargo: list[dict] = []
+        # Saldo z LoadGame, korygowane o handel (MarketBuy/MarketSell); None = jeszcze nieznane
+        self.credits: Optional[int] = None
 
     def _find_latest_journal(self) -> Optional[Path]:
         """Znajdź najnowszy plik journala wg mtime."""
@@ -226,7 +230,22 @@ class JournalWatcher:
                         self.on_materials(ev)
                     except Exception:
                         logger.exception("Błąd w on_materials")
+            elif event_type == "LoadGame":
+                # Saldo (kapitał dla tras) i start sesji gry (podsumowanie zarobków)
+                if ev.get("Credits") is not None:
+                    self.credits = int(ev["Credits"])
+                    logger.debug("LoadGame: saldo %d cr", self.credits)
+                if self.on_session:
+                    try:
+                        self.on_session(ev)
+                    except Exception:
+                        logger.exception("Błąd w on_session")
             elif event_type in ("MarketBuy", "MarketSell"):
+                if self.credits is not None:
+                    if event_type == "MarketBuy":
+                        self.credits -= int(ev.get("TotalCost") or 0)
+                    else:
+                        self.credits += int(ev.get("TotalSale") or 0)
                 if self.on_trade:
                     try:
                         self.on_trade(ev)

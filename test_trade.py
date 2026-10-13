@@ -216,3 +216,151 @@ class TestLargePad(unittest.TestCase):
             self.assertTrue(ship_needs_large_pad(ship), ship)
         for ship in ("python", "krait_mkii", "type6", "asp", "", None):
             self.assertFalse(ship_needs_large_pad(ship), ship)
+
+
+def _spansh_segment(src, dst, comms, cumulative):
+    return {"source": {"system": src, "station": src}, "destination": {"system": dst, "station": dst},
+            "distance": 10.0, "total_profit": sum(c[4] for c in comms), "cumulative_profit": cumulative,
+            "commodities": [{"name": n, "amount": a, "total_profit": p,
+                             "source_commodity": {"buy_price": b}, "destination_commodity": {"sell_price": s}}
+                            for n, a, b, s, p in comms]}
+
+
+class TestFullHold(unittest.TestCase):
+    """Spansh dopełnia ładownię kilkoma towarami — liczy się cały ładunek, nie pierwszy towar z listy."""
+
+    def test_hop_counts_whole_load(self):
+        from edtrade.trade import TradeEngine
+        # Wynik Spansh Ham Dock → Rota Obscura (400 t ładowni): 1 t srebra to tylko dopełnienie
+        data = {"result": [_spansh_segment("Ham Dock", "Rota Obscura", [
+            ("Silver", 1, 30363, 41188, 10825), ("Cobalt", 140, 845, 20108, 2696820),
+            ("Polymers", 172, 47, 9332, 1597020), ("Biowaste", 1, 31, 85, 54)], 4304719)]}
+        route = TradeEngine()._parse_spansh_result(data, "Ham Dock", "Ham Dock")
+        hop = route.hops_list[0]
+        self.assertEqual(hop.commodity, "Cobalt")
+        self.assertEqual((hop.buy_price, hop.sell_price), (845, 20108))
+        self.assertEqual(hop.amount, 314)
+        self.assertEqual(hop.profit, 4304719)
+        self.assertEqual(route.total_profit, 4304719)
+        self.assertEqual(route.cargo_used, 314)
+        self.assertEqual(route.buy_quantity, 140)
+        self.assertEqual(hop.names, ["Cobalt", "Polymers", "Silver", "Biowaste"])
+        self.assertEqual(hop.cargo_text(), "Cobalt ×140 + Polymers ×172 +2")
+
+    def test_single_commodity_text(self):
+        from edtrade.trade import Hop
+        self.assertEqual(Hop(commodity="Gold", amount=400).cargo_text(), "Gold ×400")
+
+    def test_capital_from_balance(self):
+        from unittest import mock
+        from edtrade import trade
+        engine = trade.TradeEngine()
+        self.assertEqual(engine.capital, trade.UNLIMITED_CAPITAL)  # saldo nieznane → limitem jest ładownia
+        engine.credits = 59_538_834
+        resp = mock.Mock(json=mock.Mock(return_value={}), raise_for_status=mock.Mock())
+        with mock.patch.object(trade.requests, "post", return_value=resp) as post:
+            engine.calculate_route_via_spansh("Apárctias", "Almadrava")
+        self.assertEqual(post.call_args.kwargs["data"]["starting_capital"], 59_538_834)
+
+
+class TestCreditsFromJournal(unittest.TestCase):
+    def test_loadgame_and_trades(self):
+        from edtrade.watcher import JournalWatcher
+        from pathlib import Path
+        w = JournalWatcher(journal_dir=Path("/nonexistent"))
+        w._dispatch([{"event": "MarketBuy", "TotalCost": 5}])
+        self.assertIsNone(w.credits)
+        w._dispatch([{"event": "LoadGame", "Credits": 1_000_000},
+                     {"event": "MarketBuy", "TotalCost": 300_000},
+                     {"event": "MarketSell", "TotalSale": 450_000}])
+        self.assertEqual(w.credits, 1_150_000)
+
+
+class TestLiveMarket(unittest.TestCase):
+    """Rynek z gry (Market.json) ma pierwszeństwo przed nieaktualnym Spansh — przypadek z Almadravy."""
+
+    def _route(self):
+        from edtrade.trade import Hop, HopCommodity, TradeRoute
+        hop = Hop("Apárctias", "Almadrava", "Core Sys Sector YO-R a4-3", "Tau Ceti Freedom Wing HQ",
+                  "Gold", 1, 4694, 48808, 44114,
+                  commodities=[HopCommodity("Gold", 1, 4694, 48808, 44114)])
+        later = Hop(profit=8_904_710)
+        return TradeRoute(hops=2, hops_list=[hop, later], total_profit=8_948_824, buy_item="Gold", buy_quantity=1)
+
+    @staticmethod
+    def _item(symbol, local, buy, stock):
+        return {"Name": f"${symbol}_name;", "Name_Localised": local, "BuyPrice": buy, "Stock": stock}
+
+    def test_missing_gold_replaced_by_stock_on_hand(self):
+        from edtrade.trade import MarketItem, apply_live_market
+        live = [self._item("beryllium", "Beryllium", 3951, 1), self._item("cobalt", "Cobalt", 5167, 3168),
+                self._item("silver", "Silver", 4052, 8), self._item("polymers", "Polymers", 6, 1942)]
+        dest = [MarketItem(name="cobalt", sell_price=9000, demand=200), MarketItem(name="silver", sell_price=40000, demand=500),
+                MarketItem(name="polymers", sell_price=100, demand=50_000), MarketItem(name="beryllium", sell_price=9000, demand=0)]
+        route = self._route()
+        self.assertTrue(apply_live_market(route, 0, live, dest, capacity=256, capital=59_538_834))
+        hop = route.hops_list[0]
+        self.assertNotIn("Gold", hop.names)
+        # srebro (8 t, największa marża) → kobalt do limitu popytu (200) → polimery na resztę ładowni
+        self.assertEqual([(c.name, c.amount) for c in sorted(hop.commodities, key=lambda c: -(c.sell_price - c.buy_price))],
+                         [("Silver", 8), ("Cobalt", 200), ("Polymers", 48)])
+        self.assertEqual(hop.amount, 256)
+        self.assertEqual(route.total_profit, 8_904_710 + hop.profit)
+        self.assertEqual(route.cargo_used, 256)
+        self.assertEqual(route.buy_item, hop.commodity)
+        self.assertEqual(route.error, "")
+
+    def test_capital_and_nothing_left(self):
+        from edtrade.trade import MarketItem, apply_live_market
+        route = self._route()
+        live = [self._item("cobalt", "Cobalt", 5000, 3000)]
+        apply_live_market(route, 0, live, [MarketItem(name="cobalt", sell_price=9000, demand=1000)], 256, capital=50_000)
+        self.assertEqual(route.hops_list[0].amount, 10)
+        route = self._route()
+        self.assertTrue(apply_live_market(route, 0, [], [], 256, 10**9))
+        self.assertIn("nieaktualne", route.error)
+
+    def test_spansh_prices_when_ardent_unavailable(self):
+        from edtrade.trade import apply_live_market
+        route = self._route()
+        self.assertFalse(apply_live_market(route, 0, [self._item("gold", "Gold", 4694, 1)], [], 256, 10**9))
+        route = self._route()
+        apply_live_market(route, 0, [self._item("gold", "Gold", 4694, 300)], [], 256, 10**9)
+        self.assertEqual(route.hops_list[0].amount, 256)
+
+
+class TestTopUpRoute(unittest.TestCase):
+    """Żaden odcinek nie leci pusty: wolne miejsce → towary opłacalne na następnym przystanku (dane Ardent)."""
+
+    def test_fills_partial_and_empty_legs(self):
+        from edtrade.trade import Hop, HopCommodity, MarketItem, StationMarket, TradeRoute, top_up_route
+        markets = {
+            "a": StationMarket(exports=[MarketItem(name="gold", buy_price=45000, stock=1000),
+                                        MarketItem(name="polymers", buy_price=50, stock=1000)]),
+            "b": StationMarket(exports=[MarketItem(name="tritium", buy_price=40000, stock=500)],
+                               imports=[MarketItem(name="polymers", sell_price=500, demand=100)]),
+            "c": StationMarket(imports=[MarketItem(name="tritium", sell_price=50000, demand=1000)]),
+        }
+        calls = []
+
+        def fake(system, station):
+            calls.append(station)
+            return markets[station]
+
+        gold = HopCommodity("Gold", 150, 45000, 60000, 150 * 15000)
+        route = TradeRoute(hops=2, total_profit=gold.profit, hops_list=[
+            Hop("A", "a", "B", "b", "Gold", 150, 45000, 60000, gold.profit, commodities=[gold]),
+            Hop("B", "b", "C", "c")])  # dolot, na którym Spansh nic nie wiezie
+        self.assertEqual(top_up_route(route, 256, 10**9, {"polymers": "Polymers", "tritium": "Tritium"}, fake), 2)
+        first, second = route.hops_list
+        self.assertEqual(first.commodity, "Gold")  # wybór Spansh zostaje, dochodzi tylko wolne miejsce
+        self.assertEqual([(c.name, c.amount) for c in first.commodities], [("Gold", 150), ("Polymers", 100)])
+        self.assertEqual([(c.name, c.amount) for c in second.commodities], [("Tritium", 256)])
+        self.assertEqual(route.total_profit, gold.profit + 100 * 450 + 256 * 10000)
+        self.assertEqual(route.cargo_used, 250)
+        self.assertEqual(sorted(calls), ["a", "b", "c"])  # każdy rynek pobrany raz
+
+    def test_full_hold_untouched(self):
+        from edtrade.trade import Hop, TradeRoute, top_up_route
+        route = TradeRoute(hops_list=[Hop("A", "a", "B", "b", "Gold", 256, 1, 2, 256)])
+        self.assertEqual(top_up_route(route, 256, 10**9, market_fn=lambda *_: self.fail("bez zapytań")), 0)

@@ -8,17 +8,44 @@ top bar spanning the full screen width. Uses Tkinter with overrideredirect,
 import logging
 import threading
 import tkinter as tk
+import tkinter.font as tkfont
 from typing import Optional, Callable
 
 from . import tce_theme as tce
+from . import assess
 from .slide import SlidingBar
-from .trade import TradeRoute
+from .trade import TradeRoute, age_hours
 
 logger = logging.getLogger(__name__)
 
 # Górny pasek pełnej szerokości w układzie MAIN UI z TCE: POZYCJA | status trasy | CEL
 WINDOW_HEIGHT = 84
 MARGIN = 8
+
+
+def compact_cr(value: int) -> str:
+    """Kwoty na pasku: 7920877 → 7.92M, 84500 → 84.5K (pełna wartość jest w panelu)."""
+    v = abs(value)
+    sign = "-" if value < 0 else ""
+    if v >= 1_000_000:
+        return f"{sign}{v / 1_000_000:.2f}M"
+    if v >= 10_000:
+        return f"{sign}{v / 1_000:.1f}K"
+    return f"{value:,}"
+
+
+def fit_line(text: str, width: int, measure: Callable[[str], int]) -> str:
+    """Przytnij linię z wielokropkiem, żeby zmieściła się w `width` px (pasek ma stałą szerokość)."""
+    if width <= 1 or measure(text) <= width:
+        return text
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if measure(text[:mid].rstrip() + "…") <= width:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo].rstrip() + "…"
 
 
 class TradeOverlay:
@@ -41,6 +68,7 @@ class TradeOverlay:
         self._pages: list[tuple[str, 'Callable[[], str]']] = []
         self._page_index: int = 0
         self._system_info_text: str = ''
+        self._copied_system: str = ''  # system w schowku (auto-kopiowanie celu trasy)
 
     def _setup_window(self):
         """Configure X11 window: semi-transparent, always-on-top, no decorations.
@@ -106,7 +134,7 @@ class TradeOverlay:
 
         left = self._display(body, "POZYCJA")
         left.grid(row=0, column=0, sticky="nsew", padx=(MARGIN, 6), pady=(4, 4))
-        self.system_info_label = tk.Label(left.content, text="", font=self.font_info, fg=tce.ORANGE,
+        self.system_info_label = tk.Label(left.content, width=1, text="", font=self.font_info, fg=tce.ORANGE,
                                           bg=tce.ROW_BG, anchor="w", justify=tk.LEFT)
         self.system_info_label.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
 
@@ -116,27 +144,53 @@ class TradeOverlay:
                                bg=tce.ORANGE, padx=30)
         self.header.pack(side=tk.TOP)
         self.status_label = tk.Label(center, text="OCZEKIWANIE NA DOKOWANIE", font=self.font_title,
-                                     fg=tce.ORANGE_DIM, bg=tce.BG)
-        self.status_label.pack(side=tk.TOP, pady=(2, 0))
-        self.steps_label = tk.Label(center, text="", font=self.font_info, fg=tce.ORANGE, bg=tce.BG)
-        self.steps_label.pack(side=tk.TOP)
+                                     fg=tce.ORANGE_DIM, bg=tce.BG, width=1)
+        self.status_label.pack(side=tk.TOP, pady=(2, 0), fill=tk.X)
+        self.steps_label = tk.Label(center, width=1, text="", font=self.font_info, fg=tce.ORANGE, bg=tce.BG)
+        self.steps_label.pack(side=tk.TOP, fill=tk.X)
 
         right = self._display(body, "CEL")
         right.grid(row=0, column=2, sticky="nsew", padx=(6, MARGIN), pady=(4, 4))
-        self.dest_label = tk.Label(right.content, text="", font=self.font_highlight, fg=tce.TEXT_WHITE,
+        # Linia 1: cel (lewo) + skoki/wiek cen/paliwo (prawo); linia 2: towar, ceny, zysk
+        top = tk.Frame(right.content, bg=tce.ROW_BG)
+        top.pack(fill=tk.X, padx=8, pady=(3, 0))
+        self.meta_label = tk.Label(top, text="", font=self.font_info, fg=tce.ORANGE, bg=tce.ROW_BG, anchor="e")
+        self.meta_label.pack(side=tk.RIGHT)
+        self.dest_label = tk.Label(top, width=1, text="", font=self.font_highlight, fg=tce.TEXT_WHITE,
                                    bg=tce.ROW_BG, anchor="w")
-        self.dest_label.pack(fill=tk.X, padx=8, pady=(3, 0))
-        self.route_label = tk.Label(right.content, text="", font=self.font_info, fg=tce.ORANGE,
+        self.dest_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.route_label = tk.Label(right.content, width=1, text="", font=self.font_info, fg=tce.ORANGE,
                                     bg=tce.ROW_BG, anchor="w")
         self.route_label.pack(fill=tk.X, padx=8, pady=(0, 3))
 
         self._hide_content()
 
+    def _set_fit(self, label: tk.Label, text: str, **kw) -> None:
+        """Ustaw tekst przycięty do szerokości etykiety; po zmianie rozmiaru/skali przycina ponownie."""
+        label._full_text = text
+        if not getattr(label, "_fit_bound", False):
+            label.bind("<Configure>", lambda _e, lb=label: self._refit(lb), add="+")
+            label._fit_bound = True
+        if kw:
+            label.config(**kw)
+        self._refit(label)
+
+    def _refit(self, label: tk.Label) -> None:
+        text = getattr(label, "_full_text", None)
+        if text is None:
+            return
+        measure = tkfont.nametofont(str(label.cget("font")), root=label).measure
+        width = label.winfo_width() - 2 * int(label.cget("padx") or 0) - 4
+        fitted = "\n".join(fit_line(line, width, measure) for line in text.split("\n"))
+        if label.cget("text") != fitted:
+            label.config(text=fitted)
+
     def _hide_content(self):
         """Wyczyść wyświetlacz celu i checklistę."""
-        self.dest_label.config(text="")
-        self.route_label.config(text="", fg=tce.ORANGE)
-        self.steps_label.config(text="")
+        for label in (self.dest_label, self.route_label, self.steps_label):
+            self._set_fit(label, "")
+        self.meta_label.config(text="")
+        self.route_label.config(fg=tce.ORANGE)
 
     def update_route(self, route: TradeRoute):
         """Aktualizuj overlay z nową trasą — thread-safe (wołane z wątku watchera)."""
@@ -175,7 +229,7 @@ class TradeOverlay:
 
         if self.current_route is None:
             self._hide_content()
-            self.status_label.config(text="OCZEKIWANIE NA DOKOWANIE", fg=tce.ORANGE_DIM)
+            self._set_fit(self.status_label, "OCZEKIWANIE NA DOKOWANIE", fg=tce.ORANGE_DIM)
             return
 
         route = self.current_route
@@ -185,8 +239,8 @@ class TradeOverlay:
 
         if route.error:
             self._hide_content()
-            self.route_label.config(text=f"BŁĄD: {route.error}".upper(), fg=tce.RED)
-            self.status_label.config(text="BŁĄD TRASY", fg=tce.RED)
+            self._set_fit(self.route_label, f"BŁĄD: {route.error}".upper(), fg=tce.RED)
+            self._set_fit(self.status_label, "BŁĄD TRASY", fg=tce.RED)
             return
 
         # Pojedynczy wiersz trasy — wyśrodkowany
@@ -204,6 +258,9 @@ class TradeOverlay:
             display_dest_station = current_hop.destination_station
             display_item = current_hop.commodity
             display_qty = current_hop.amount
+            display_names = current_hop.names
+            display_cargo = current_hop.cargo_text() or "BEZ ŁADUNKU"
+            multi = len(current_hop.commodities) > 1
             display_buy = current_hop.buy_price
             display_sell = current_hop.sell_price
         else:
@@ -211,40 +268,67 @@ class TradeOverlay:
             display_dest_station = route.destination_station
             display_item = route.buy_item
             display_qty = route.buy_quantity
+            display_names = [display_item] if display_item else []
+            display_cargo = f"{display_item} ×{display_qty}"
+            multi = False
             display_buy = route.buy_price
             display_sell = route.sell_price
 
-        extras = []
+        meta = []
+        meta_color = tce.ORANGE
         if route.jumps > 0:
-            extras.append(f"{route.jumps} SKOKI")
-        if getattr(route, '_market_freshness_ts', None):
-            import time
-            elapsed = int(time.time() - route._market_freshness_ts)
-            extras.append(f"{elapsed}s temu" if elapsed < 60 else
-                          f"{elapsed // 60}m temu" if elapsed < 3600 else f"{elapsed // 3600}h temu")
+            meta.append(f"{route.jumps} SKOKI")
+        current = route.hops_list[hop_num - 1] if route.hops_list and 1 <= hop_num <= len(route.hops_list) else None
+        sell_age = age_hours(current.dst_updated_at) if current is not None else None
+        if sell_age is not None:
+            meta.append("CENY " + (f"{sell_age:.0f}H" if sell_age < 48 else f"{sell_age / 24:.0f}D"))
+        if sell_age is not None:
+            # Werdykt etapu (tylko gdy znamy wiek cen celu — bez niego nie zgadujemy): trasa ze Spansh jest zyskowo najlepsza — o OPTIMAL/RISKY decyduje pewność cen celu
+            verdict, shade = assess.assess_route_hop(sell_age)
+            meta.insert(0, assess.badge_for(verdict, shade))
+            meta_color = tce.verdict_color(verdict, shade)
+        security = getattr(current, '_security', '') if current is not None else ''
+        if security.lower() in ("low", "anarchy"):
+            meta.append(f"⚠ {security.upper()} SEC" if security.lower() == "low" else "⚠ ANARCHY")
+            meta_color = tce.RED
         if getattr(route, '_scoopable', False):
-            extras.append("⛽")
+            meta.append("⛽")
+        if self._copied_system and self._copied_system.lower() in ((display_dest_system or "").lower(),
+                                                                   (display_dest_station or "").lower()):
+            meta.append("✓ W SCHOWKU")
 
         # Cargo awareness — ostrzeżenie jeśli w ładowni jest coś innego niż towar hopu
+        cargo_warning = ""
         if self._player_cargo and display_item and display_qty:
             def norm(name: str) -> str:
                 return "".join(ch for ch in name.lower() if ch.isalnum())
+            hop_names = {norm(n) for n in display_names}
             other_items = [f"{i.get('Name_Localised') or i['Name']} x{i['Count']}" for i in self._player_cargo
-                           if norm(display_item) not in (norm(i.get('Name', '')), norm(i.get('Name_Localised', '')))
+                           if not hop_names & {norm(i.get('Name', '')), norm(i.get('Name_Localised', ''))}
                            and i.get('Count', 0) > 0 and i.get('Name', '').lower() != 'drones'
                            and not i.get('MissionID')]
             if other_items:
-                extras.append(f"[MASZ: {', '.join(other_items)}]")
+                cargo_warning = f"MASZ: {', '.join(other_items)}"
 
-        self.dest_label.config(text=f"{display_dest_system} · {display_dest_station}".upper())
-        route_text = (f"{display_item} ×{display_qty}  {display_buy:,} → {display_sell:,} CR"
-                      f"  ·  ZYSK {route.total_profit:,} CR")
-        if extras:
-            route_text += "  ·  " + "  ".join(extras)
-        self.route_label.config(text=route_text.upper(), fg=tce.GREEN if route.total_profit > 0 else tce.RED)
-        self.steps_label.config(text="  ".join(t for t in (hop_info, steps.upper()) if t))
+        self._set_fit(self.dest_label, f"{display_dest_system} · {display_dest_station}".upper())
+        self.meta_label.config(text="  ·  ".join(meta), fg=meta_color)  # krótkie — bez przycinania
+        # Kilka towarów w ładowni: lista zamiast cen (ceny każdego są w panelu, w karcie hopu)
+        route_text = (f"{display_cargo}  ·  {display_qty}T" if multi else display_cargo if not display_names else
+                      f"{display_cargo}  {display_buy:,} → {display_sell:,}") + f"  ·  ZYSK {compact_cr(route.total_profit)} CR"
+        if cargo_warning:
+            route_text += f"  ·  {cargo_warning}"
+        self._set_fit(self.route_label, route_text.upper(), fg=tce.GREEN if route.total_profit > 0 else tce.RED)
+        self._set_fit(self.steps_label, "  ".join(t for t in (hop_info, steps.upper()) if t))
         finished = "ukończona" in steps
-        self.status_label.config(text="TRASA UKOŃCZONA" if finished else "TRASA AKTYWNA", fg=tce.GREEN)
+        check = getattr(route, '_live_check', None)
+        if finished:
+            self._set_fit(self.status_label, "TRASA UKOŃCZONA", fg=tce.GREEN)
+        elif check is not None and check.hop_index == hop_num - 1:
+            # Weryfikacja cenami z gry (Market.json po otwarciu rynku): ✓ / ⚠ / ✗
+            color = {"ok": tce.GREEN, "warn": tce.VERDICT_COLORS["hold"], "gone": tce.RED}[check.level]
+            self._set_fit(self.status_label, check.text, fg=color)
+        else:
+            self._set_fit(self.status_label, "TRASA AKTYWNA", fg=tce.GREEN)
 
     def set_polling_status(self, elapsed: int) -> None:
         """Aktualizuj status w czasie pollingu Spansh — thread-safe."""
@@ -260,7 +344,11 @@ class TradeOverlay:
 
     def _set_polling_status_inner(self, elapsed: int) -> None:
         """Wywoływane z mainloop — aktualizuje status bez zmiany current_route."""
-        self.status_label.config(text=f"LICZĘ TRASĘ… {elapsed}s", fg=tce.ORANGE)
+        if getattr(self.current_route, '_quick', False):
+            # Szybka trasa z rynku stacji już jest na pasku — Spansh liczy pełną (wieloetapową)
+            self._set_fit(self.status_label, f"SZYBKA TRASA · PEŁNA ZA CHWILĘ… {elapsed}s", fg=tce.GREEN)
+        else:
+            self._set_fit(self.status_label, f"LICZĘ TRASĘ… {elapsed}s", fg=tce.ORANGE)
 
     def set_system_info(self, text: str) -> None:
         """Ustaw info o systemie/stacjach — thread-safe. Rejestruje też jako strona rotacji."""
@@ -270,7 +358,7 @@ class TradeOverlay:
         """Wywoływane z mainloop — aktualizuje system_info_text i rejestruje stronę 'system'."""
         self._system_info_text = text
         self.register_page('system', lambda: self._system_info_text)
-        self.system_info_label.config(text=text.upper())
+        self._set_fit(self.system_info_label, text.upper())
 
     def register_page(self, name: str, getter) -> None:
         """Zarejestruj/zaktualizuj stronę rotacji paska (name unikalny, getter: () -> str)."""
@@ -286,10 +374,15 @@ class TradeOverlay:
             self._page_index = (self._page_index + 1) % len(self._pages)
             name, getter = self._pages[self._page_index]
             try:
-                self.system_info_label.config(text=getter().upper())
+                self._set_fit(self.system_info_label, getter().upper())
             except Exception:
                 logger.exception('Błąd rotacji strony %s', name)
         self.master.after(8000, self._rotate_pages)
+
+    def mark_copied(self, system: str) -> None:
+        """Wołane w wątku Tk: cel trasy jest w schowku — pasek pokaże "✓ W SCHOWKU" przy celu."""
+        self._copied_system = system
+        self._refresh_now()
 
     def _refresh_now(self):
         """Wymuś natychmiastowe odświeżenie (inkrementacja hopa itp.)."""
