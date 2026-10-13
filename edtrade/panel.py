@@ -413,13 +413,14 @@ class TradePanel:
 
         self.settings_status_var = tk.StringVar(value='')
         ttk.Label(self.settings_frame, textvariable=self.settings_status_var).grid(row=13, column=1, sticky='w', pady=4)
-        self._autosave_job = None
-        self._watch_settings(self.settings_frame)
 
         tce.uppercase_static_texts(self.window)
         self._render_context()
         self.nav = tce.NavBar(self.window, self.notebook, self.fonts, on_change=self.title_bar.set_title)
         self.nav.pack(fill=tk.X, padx=8, pady=(6, 0), before=self.notebook)
+
+        self._autosave_job = None
+        self._watch_settings(self.settings_frame)
 
     def _watch_settings(self, frame: tk.Misc) -> None:
         """Autozapis: każda zmienna podpięta pod widżet w zakładce Ustawienia zapisuje config po zmianie.
