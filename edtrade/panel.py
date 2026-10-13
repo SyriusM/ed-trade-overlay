@@ -9,7 +9,7 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
-from typing import Optional
+from typing import Callable, Optional
 from .config import load_user_config, save_user_config
 from . import materials as mats
 from . import tce_theme as tce
@@ -49,10 +49,17 @@ MATERIAL_HINTS = {
 }
 
 
+def _hops_word(n: int) -> str:
+    if n == 1:
+        return 'hop'
+    return 'hopy' if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else 'hopów'
+
+
 class TradePanel:
     """Osobne okno z zakładkami (System/Materiały/Mining/Towary/Market/Journey/Inżynieria/Ustawienia)."""
 
-    def __init__(self, master: tk.Tk, user_config: Optional[dict] = None, config_path: Optional[Path] = None):
+    def __init__(self, master: tk.Tk, user_config: Optional[dict] = None, config_path: Optional[Path] = None,
+                 on_appearance_change: Optional[Callable[[float, float], None]] = None):
         self.master = master
         self.config_path = config_path
         self.user_config = user_config if user_config is not None else load_user_config(config_path)
@@ -63,14 +70,27 @@ class TradePanel:
         self.window.configure(bg=tce.BG)
         # X minimalizuje okno zamiast je niszczyć — panel wraca z paska zadań / Alt-Tab
         self.window.protocol('WM_DELETE_WINDOW', self.window.iconify)
-        self.fonts = tce.Fonts(self.window)
+        self.on_appearance_change = on_appearance_change
+        self.fonts = tce.Fonts(self.window, scale=float(self.user_config.get('panel_font_scale', 1.0)))
         tce.apply_ttk_theme(self.window, self.fonts)
 
-        self.title_bar = tce.TitleBar(self.window, 'System', self.fonts,
+        self.title_bar = tce.TitleBar(self.window, 'Trasa', self.fonts,
                                       on_control=self._open_settings, on_hide=self.window.iconify)
         self.title_bar.pack(fill=tk.X)
         self.notebook = ttk.Notebook(self.window, style='TCE.TNotebook')
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=(4, 8))
+
+        self.tab_route = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_route, text='Trasa')
+        self._route_lock = threading.Lock()
+        self._route = None
+        self.route_header = tce.SectionHeader(self.tab_route, 'Trasa handlowa', self.fonts)
+        self.route_header.pack(fill=tk.X, padx=10, pady=(10, 2))
+        self.route_status = tk.Label(self.tab_route, text='OCZEKIWANIE NA DOKOWANIE — TRASA LICZY SIĘ PO DOKOWANIU',
+                                     bg=tce.BG, fg=tce.ORANGE_DIM, font=self.fonts.title, anchor='w')
+        self.route_status.pack(fill=tk.X, padx=10, pady=(4, 6))
+        self.route_cards = tk.Frame(self.tab_route, bg=tce.BG)
+        self.route_cards.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
 
         self.tab_system = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_system, text='System')
@@ -306,15 +326,40 @@ class TradePanel:
         self.bar_only_var = tk.BooleanVar(value=bool(self.user_config.get('bar_only_when_game_focused', False)))
         ttk.Checkbutton(self.settings_frame, text='Pasek tylko gdy gra ma fokus', variable=self.bar_only_var).grid(row=5, column=1, sticky='w', pady=4)
 
+        self.bar_alpha_var = tk.DoubleVar(value=float(self.user_config.get('bar_alpha', 0.75)))
+        self.bar_scale_var = tk.DoubleVar(value=float(self.user_config.get('bar_font_scale', 1.0)))
+        self.panel_scale_var = tk.DoubleVar(value=float(self.user_config.get('panel_font_scale', 1.0)))
+        for row, (title, var, lo, hi) in enumerate((
+                ('Przezroczystość paska:', self.bar_alpha_var, 0.3, 1.0),
+                ('Czcionka paska (skala):', self.bar_scale_var, 0.7, 1.8),
+                ('Czcionka panelu (skala):', self.panel_scale_var, 0.7, 1.8)), start=6):
+            ttk.Label(self.settings_frame, text=title).grid(row=row, column=0, sticky='w', padx=(0, 8), pady=4)
+            line = ttk.Frame(self.settings_frame)
+            line.grid(row=row, column=1, sticky='ew', pady=4)
+            value = ttk.Label(line, text=f'{var.get():.2f}', width=5)
+            value.pack(side=tk.RIGHT)
+            ttk.Scale(line, from_=lo, to=hi, variable=var, orient=tk.HORIZONTAL,
+                      command=lambda _v, var=var, value=value: self._appearance_preview(var, value)).pack(
+                side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+
         self.save_settings_btn = ttk.Button(self.settings_frame, text='Zapisz', command=self.save_settings)
-        self.save_settings_btn.grid(row=6, column=1, sticky='w', pady=(10, 4))
+        self.save_settings_btn.grid(row=9, column=1, sticky='w', pady=(10, 4))
 
         self.settings_status_var = tk.StringVar(value='')
-        ttk.Label(self.settings_frame, textvariable=self.settings_status_var).grid(row=7, column=1, sticky='w', pady=4)
+        ttk.Label(self.settings_frame, textvariable=self.settings_status_var).grid(row=10, column=1, sticky='w', pady=4)
 
         tce.uppercase_static_texts(self.window)
         self.nav = tce.NavBar(self.window, self.notebook, self.fonts, on_change=self.title_bar.set_title)
         self.nav.pack(fill=tk.X, padx=8, pady=(6, 0), before=self.notebook)
+
+    def _appearance_preview(self, var: tk.DoubleVar, value_label: ttk.Label) -> None:
+        """Suwaki CONTROL działają na żywo; zapis do configu dopiero przyciskiem ZAPISZ."""
+        value_label.configure(text=f'{var.get():.2f}')
+        if var is self.panel_scale_var:
+            self.fonts.set_scale(var.get())
+            tce.set_table_row_height(self.window, self.fonts)
+        elif self.on_appearance_change is not None:
+            self.on_appearance_change(self.bar_alpha_var.get(), self.bar_scale_var.get())
 
     def _open_settings(self) -> None:
         self.nav.select_frame(self.tab_settings)
@@ -478,6 +523,71 @@ class TradePanel:
         else:
             self.commodity_header.set(f'Brak stacji, gdzie {what} {commodity} (albo nieznana nazwa)', '')
         self.commodity_btn.config(state=tk.NORMAL)
+
+    def show_route(self, route) -> None:
+        """Wolane z watku watchera (nowa trasa albo zmiana checklisty). Stan pod lockiem, render w watku Tk."""
+        with self._route_lock:
+            self._route = route
+        try:
+            self.window.after(0, self._render_route)
+        except Exception:
+            pass
+
+    def _render_route(self) -> None:
+        """Karty hopow jak w Route Finder TCE: → kup tu / ← sprzedaj tam, po prawej dystans i zysk."""
+        with self._route_lock:
+            route = self._route
+        for child in self.route_cards.winfo_children():
+            child.destroy()
+        if route is None:
+            return
+        if route.error:
+            self.route_header.set('Trasa handlowa', '')
+            self.route_status.config(text=f'BŁĄD TRASY: {route.error}'.upper(), fg=tce.RED)
+            return
+        hops = route.hops_list or []
+        current = getattr(route, '_current_hop', 1)
+        steps = getattr(route, '_checklist_text', '')
+        finished = 'ukończona' in steps
+        start = hops[0] if hops else None
+        self.route_header.set(f'Trasa z {start.source_system} · {start.source_station}' if start else 'Trasa handlowa',
+                              f'{len(hops)} {_hops_word(len(hops))} · zysk {route.total_profit:,} cr')
+        if finished:
+            self.route_status.config(text='TRASA UKOŃCZONA', fg=tce.GREEN)
+        else:
+            self.route_status.config(text=f'TRASA AKTYWNA — HOP {current}/{len(hops)}', fg=tce.GREEN)
+        for i, hop in enumerate(hops, 1):
+            self._route_card(i, hop, done=finished or i < current, active=not finished and i == current,
+                             steps=steps if not finished and i == current else '')
+
+    def _route_card(self, index: int, hop, done: bool, active: bool, steps: str) -> None:
+        f = self.fonts
+        bg = tce.ROW_BG if active else tce.ROW_BG_DARK
+        fg = tce.ORANGE_DIM if done else tce.ORANGE
+        card = tk.Frame(self.route_cards, bg=bg, highlightthickness=2 if active else 1,
+                        highlightbackground=tce.ORANGE if active else tce.ORANGE_DIM)
+        card.pack(fill=tk.X, pady=(0, 6))
+        card.columnconfigure(1, weight=1)
+        mark = '✓' if done else ('▶' if active else str(index))
+        tk.Label(card, text=mark, bg=bg, fg=tce.GREEN if done else fg, font=f.big, width=3).grid(
+            row=0, column=0, rowspan=3, sticky='ns')
+        buy = f'→  {hop.source_station} · {hop.source_system}    KUP {hop.commodity} ×{hop.amount} @ {hop.buy_price:,} CR'
+        sell = f'←  {hop.destination_station} · {hop.destination_system}    SPRZEDAJ @ {hop.sell_price:,} CR'
+        tk.Label(card, text=buy.upper(), bg=bg, fg=fg, font=f.body_bold, anchor='w').grid(
+            row=0, column=1, sticky='ew', padx=(4, 8), pady=(6, 0))
+        tk.Label(card, text=sell.upper(), bg=bg, fg=fg, font=f.body_bold, anchor='w').grid(
+            row=1, column=1, sticky='ew', padx=(4, 8), pady=(0, 6 if not steps else 0))
+        if steps:
+            tk.Label(card, text=steps.upper(), bg=bg, fg=tce.TEXT_WHITE, font=f.body_bold, anchor='w').grid(
+                row=2, column=1, sticky='ew', padx=(4, 8), pady=(2, 6))
+        profit = hop.profit if hop.profit > 0 else (hop.sell_price - hop.buy_price) * hop.amount
+        side = tk.Frame(card, bg=bg)
+        side.grid(row=0, column=2, rowspan=3, sticky='e', padx=(8, 12))
+        if hop.distance:
+            tk.Label(side, text=f'{hop.distance:.2f} LY', bg=bg, fg=tce.TEXT_WHITE if not done else fg,
+                     font=f.section, anchor='e').pack(anchor='e')
+        tk.Label(side, text=f'+{profit:,} CR', bg=bg, fg=tce.GREEN if not done else fg,
+                 font=f.big, anchor='e').pack(anchor='e')
 
     def show_docked_station(self, system_name: str, station_name: str) -> None:
         """Wolane z watku watchera po Docked: przekaz do watku Tk przez after(0)."""
@@ -676,6 +786,9 @@ class TradePanel:
             'mining_mineral': mining_mineral,
             'game_window_class': self.game_window_class_var.get().strip(),
             'bar_only_when_game_focused': bool(self.bar_only_var.get()),
+            'bar_alpha': round(self.bar_alpha_var.get(), 2),
+            'bar_font_scale': round(self.bar_scale_var.get(), 2),
+            'panel_font_scale': round(self.panel_scale_var.get(), 2),
         })
 
         # Zapisz do pliku

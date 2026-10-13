@@ -3,6 +3,7 @@
 Plik JSON w ~/.config/ed-trade-overlay/config.json. Puste pole ("") = automat wyłączony.
 Klucz game_window_class = klasa okna gry (kdotool), domyślnie appid Elite Dangerous — niezweryfikowana, odczytaj z logu "Aktywne okno: class=" gdy gra ma fokus.
 Klucz bar_only_when_game_focused = czy pasek ma być widoczny tylko, gdy okno gry ma fokus (domyślnie False, włączyć dopiero po zweryfikowaniu game_window_class).
+Klucze bar_alpha / bar_font_scale / panel_font_scale = wygląd (CONTROL jak w TCE): przezroczystość paska i skale czcionek.
 """
 
 import json
@@ -21,6 +22,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     'mining_mineral': '',
     'game_window_class': 'steam_app_359320',
     'bar_only_when_game_focused': False,
+    'bar_alpha': 0.75,
+    'bar_font_scale': 1.0,
+    'panel_font_scale': 1.0,
 }
 
 

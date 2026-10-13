@@ -60,13 +60,20 @@ class TradeOverlay:
         # Zablokuj zmianę rozmiaru
         self.master.resizable(False, False)
 
-    def _apply_geometry(self):
-        """Ustaw geometrię: pełna szerokość ekranu, mała wysokość u góry."""
+    def _apply_geometry(self, scale: float = 1.0):
+        """Ustaw geometrię: pełna szerokość ekranu, mała wysokość u góry (rośnie ze skalą czcionki)."""
         width = self.master.winfo_screenwidth()
-        self.master.geometry(f"{width}x{WINDOW_HEIGHT}+0+0")
+        self.master.geometry(f"{width}x{round(WINDOW_HEIGHT * scale)}+0+0")
+
+    def apply_appearance(self, alpha: float, font_scale: float) -> None:
+        """CONTROL jak w TCE: przezroczystość i skala czcionki paska (wołane w wątku Tk)."""
+        self.master.attributes("-alpha", min(1.0, max(0.2, alpha)))
+        self.fonts.set_scale(font_scale)
+        self._apply_geometry(font_scale)
 
     def _setup_fonts(self):
         fonts = tce.Fonts(self.master)
+        self.fonts = fonts
         self.font_tab = fonts.tab
         self.font_title = fonts.big
         self.font_highlight = fonts.section

@@ -118,10 +118,14 @@ class EDTradeOverlayApp:
         self._show_overlay = not args.no_overlay
         self.user_config = user_config_module.load_user_config()
         self.overlay = TradeOverlay() if self._show_overlay else None
+        if self.overlay is not None:
+            self.overlay.apply_appearance(float(self.user_config.get('bar_alpha', 0.75)),
+                                          float(self.user_config.get('bar_font_scale', 1.0)))
         self.panel = None
         if self.overlay is not None and not args.no_panel:
             try:
-                self.panel = TradePanel(self.overlay.master, user_config=self.user_config)
+                self.panel = TradePanel(self.overlay.master, user_config=self.user_config,
+                                        on_appearance_change=self.overlay.apply_appearance)
                 logger.info("TradePanel utworzony (zakładki: System/Materiały/Mining/Journey)")
             except Exception:
                 logger.exception("Nie udało się utworzyć TradePanel")
@@ -218,6 +222,8 @@ class EDTradeOverlayApp:
             logger.info("Checklista: %s", self.checklist.status_text())
         if self.overlay:
             self.overlay.update_route(route)
+        if self.panel is not None:
+            self.panel.show_route(route)
 
     def _feed_checklist(self, event: dict) -> None:
         if self.checklist is None or not self.checklist.on_event(event):
@@ -226,6 +232,8 @@ class EDTradeOverlayApp:
                     len(self.checklist.hops), self.checklist.status_text())
         if self.overlay:
             self.overlay._refresh_now()
+        if self.panel is not None:
+            self.panel.show_route(self.checklist.route)
 
     def _on_trade(self, event: dict):
         """MarketBuy/MarketSell — odhaczanie kroków; po ukończeniu trasy od razu następna z bieżącej stacji."""

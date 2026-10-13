@@ -36,15 +36,21 @@ def pick_font_family(root: tk.Misc) -> str:
 
 
 class Fonts:
+    BASE_SIZES = {"tab": 10, "title": 13, "section": 11, "body": 10, "body_bold": 10, "big": 15}
+    BOLD = {"tab", "title", "section", "body_bold", "big"}
+
     def __init__(self, root: tk.Misc, scale: float = 1.0):
-        family = pick_font_family(root)
-        self.family = family
-        self.tab = tkfont.Font(root, family=family, size=round(10 * scale), weight="bold")
-        self.title = tkfont.Font(root, family=family, size=round(13 * scale), weight="bold")
-        self.section = tkfont.Font(root, family=family, size=round(11 * scale), weight="bold")
-        self.body = tkfont.Font(root, family=family, size=round(10 * scale))
-        self.body_bold = tkfont.Font(root, family=family, size=round(10 * scale), weight="bold")
-        self.big = tkfont.Font(root, family=family, size=round(15 * scale), weight="bold")
+        self.family = pick_font_family(root)
+        self.scale = scale
+        for name, size in self.BASE_SIZES.items():
+            setattr(self, name, tkfont.Font(root, family=self.family, size=round(size * scale),
+                                            weight="bold" if name in self.BOLD else "normal"))
+
+    def set_scale(self, scale: float) -> None:
+        """Zmiana na żywo — widgety używające tych obiektów Font przerysowują się same."""
+        self.scale = scale
+        for name, size in self.BASE_SIZES.items():
+            getattr(self, name).configure(size=max(6, round(size * scale)))
 
 
 def apply_ttk_theme(root: tk.Misc, fonts: Fonts) -> None:
@@ -73,6 +79,8 @@ def apply_ttk_theme(root: tk.Misc, fonts: Fonts) -> None:
     style.configure("TCheckbutton", background=BG, foreground=ORANGE, indicatorbackground=ROW_BG,
                     indicatorforeground=ORANGE, font=fonts.body_bold)
     style.map("TCheckbutton", background=[("active", BG)], indicatorbackground=[("selected", ORANGE)])
+    style.configure("Horizontal.TScale", background=ORANGE, troughcolor=ROW_BG, bordercolor=ORANGE_DIM,
+                    lightcolor=ORANGE, darkcolor=ORANGE)
     style.configure("Vertical.TScrollbar", background=ORANGE_DIM, troughcolor=BG, bordercolor=BG,
                     arrowcolor=TEXT_ON_ORANGE, lightcolor=ORANGE_DIM, darkcolor=ORANGE_DIM, gripcount=0)
     style.map("Vertical.TScrollbar", background=[("active", ORANGE), ("pressed", ORANGE)])
@@ -87,6 +95,10 @@ def apply_ttk_theme(root: tk.Misc, fonts: Fonts) -> None:
     style.configure("TCE.TNotebook", background=BG, borderwidth=1, tabmargins=0, bordercolor=ORANGE_DIM,
                     lightcolor=BG, darkcolor=BG)
     style.layout("TCE.TNotebook.Tab", [])
+
+
+def set_table_row_height(root: tk.Misc, fonts: Fonts) -> None:
+    ttk.Style(root).configure("Treeview", rowheight=fonts.body.metrics("linespace") + 8)
 
 
 def uppercase_static_texts(widget: tk.Misc) -> None:
