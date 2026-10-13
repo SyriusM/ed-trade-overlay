@@ -183,3 +183,12 @@ class TestCarrying(unittest.TestCase):
         route = TradeRoute(hops=1, hops_list=[Hop("A", "a", "B", "b", "Gold", 249, 0, 2)])
         cl = RouteChecklist(route, NAMES, cargo=[{"Name": "gold", "Count": 249}], docked=("A", "a"), created_at=T0)
         self.assertIn("✓ kup 249/249", cl.status_text())
+
+
+class TestCargoTruth(unittest.TestCase):
+    def test_cargo_counts_purchase_without_marketbuy(self):
+        route = TradeRoute(hops=1, hops_list=[Hop("A", "a", "B", "b", "Military Grade Fabrics", 249, 1950, 12385)])
+        cl = RouteChecklist(route, {"militarygradefabrics": "Military Grade Fabrics"}, docked=("A", "a"), created_at=T0)
+        self.assertTrue(cl.on_cargo([{"Name": "militarygradefabrics", "Count": 249}, {"Name": "drones", "Count": 7}]))
+        self.assertIn("✓ kup 249/249", cl.status_text())
+        self.assertIn("▶ leć", cl.status_text())
