@@ -28,7 +28,8 @@ def init_market_cache(db_path: Path) -> sqlite3.Connection:
     """
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(db_path)
+    # Tworzone w wątku głównym, używane wyłącznie przez wątek watchera (event Market) — jeden użytkownik naraz
+    conn = sqlite3.connect(db_path, check_same_thread=False)
     cursor = conn.cursor()
 
     # Tabela MarketHistory
