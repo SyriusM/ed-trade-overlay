@@ -625,13 +625,14 @@ def _market_symbol(item: dict) -> str:
 
 
 def refill_hop_from_market(hop: "Hop", live_items: list[dict], dest_imports: list["MarketItem"], capacity: int,
-                           capital: int, names: Optional[dict[str, str]] = None) -> None:
+                           capital: int, names: Optional[dict[str, str]] = None, keep_load: bool = False) -> None:
     """Ładunek hopu od nowa wg rynku z gry (Market.json), nie wg danych Spansh.
 
     Spansh liczy na danych sprzed godzin — proponuje towary, których już nie ma (albo jest 1 t). Z bieżącego
     rynku bierzemy tylko to, co jest na stanie, i dopełniamy ładownię wg marży do celu hopu: zachłannie
     (największa marża pierwsza), ile pozwala zapas, popyt w celu, wolne miejsce i kredyty.
     Ceny w celu: Ardent (dest_imports), a gdy ich brak — ceny sprzedaży ze Spansh dla towarów hopu.
+    keep_load=True: ładunek hopu zostaje, dobieramy tylko na wolne miejsce (inne towary).
     """
     names = names or {}
     sell_at = {_norm_commodity(i.name): (i.sell_price, i.demand) for i in dest_imports if i.sell_price > 0}
@@ -648,6 +649,12 @@ def refill_hop_from_market(hop: "Hop", live_items: list[dict], dest_imports: lis
         if dest and dest[0] > buy:
             offers.append((dest[0] - buy, display, buy, dest[0], min(stock, dest[1])))
     space, money, load = int(capacity), int(capital), []
+    if keep_load:
+        load = list(hop.commodities)
+        space -= sum(c.amount for c in load)
+        money -= sum(c.amount * c.buy_price for c in load)
+        taken = {_norm_commodity(c.name) for c in load}
+        offers = [o for o in offers if _norm_commodity(o[1]) not in taken]
     for margin, display, buy, sell, limit in sorted(offers, reverse=True):
         units = min(limit, space, money // buy)
         if units > 0:
@@ -681,6 +688,41 @@ def apply_live_market(route: "TradeRoute", hop_index: int, live_items: list[dict
     logger.info("Rynek z gry: hop %d %s → %s (zysk %d → %d)", hop_index + 1, before,
                 [(c.name, c.amount) for c in hop.commodities], old_profit, hop.profit)
     return True
+
+
+def top_up_route(route: "TradeRoute", capacity: int, capital: int, names: Optional[dict[str, str]] = None,
+                 market_fn: Optional[Callable[[str, str], "StationMarket"]] = None) -> int:
+    """Żaden odcinek trasy nie leci pusty ani w połowie pusty: do ładunku Spansh dobieramy (wg danych Ardent)
+    towary opłacalne do sprzedaży na następnym przystanku — także na hopach dolotowych, gdzie Spansh nic nie wiezie.
+    Zwraca liczbę dopełnionych hopów."""
+    market_fn = market_fn or get_station_market
+    markets: dict[tuple[str, str], "StationMarket"] = {}
+
+    def market(system: str, station: str) -> "StationMarket":
+        key = (system.lower(), station.lower())
+        if key not in markets:
+            markets[key] = market_fn(system, station)
+        return markets[key]
+
+    changed = 0
+    for i, hop in enumerate(route.hops_list):
+        if hop.amount >= capacity:
+            continue
+        src = market(hop.source_system, hop.source_station)
+        dst = market(hop.destination_system, hop.destination_station)
+        items = [{"Name": e.name, "BuyPrice": e.buy_price, "Stock": e.stock} for e in src.exports]
+        before, old_profit = hop.amount, hop.profit
+        refill_hop_from_market(hop, items, dst.imports, capacity, capital, names, keep_load=True)
+        if hop.amount == before:
+            continue
+        changed += 1
+        route.total_profit += hop.profit - old_profit
+        if i == 0:
+            route.buy_item, route.buy_price, route.sell_price = hop.commodity, hop.buy_price, hop.sell_price
+            route.buy_quantity = hop.commodities[0].amount
+            route.cargo_used = hop.amount
+        logger.info("Dopełnienie hopu %d: %d t → %d t (zysk %d → %d)", i + 1, before, hop.amount, old_profit, hop.profit)
+    return changed
 
 
 SERVICE_FIELDS = (

@@ -16,7 +16,8 @@ from pathlib import Path
 from .watcher import JournalWatcher
 from .filters import filter_from_config
 from .trade import (TradeEngine, ship_needs_large_pad, get_system_info, search_stations, find_material_traders,
-                    find_mining_hotspots, find_mineral_buyers, get_station_market, apply_live_market)
+                    find_mining_hotspots, find_mineral_buyers, get_station_market, apply_live_market,
+                    top_up_route)
 from .overlay import TradeOverlay
 from .panel import TradePanel
 from .window_watch import get_active_window
@@ -238,6 +239,10 @@ class EDTradeOverlayApp:
         if not route.error and route.hops_list:
             if not self._commodity_names:
                 self._commodity_names = load_commodity_names()
+            try:  # wolne miejsce na każdym odcinku (też pustym dolocie) → towary na następny przystanek
+                top_up_route(route, int(self.trade_engine.capacity), self.trade_engine.capital, self._commodity_names)
+            except Exception:
+                logger.exception("Błąd dopełniania ładowni na trasie")
             self.checklist = RouteChecklist(
                 route, self._commodity_names,
                 cargo=self._cargo or self.watcher._player_cargo,

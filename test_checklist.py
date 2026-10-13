@@ -134,3 +134,11 @@ class TestMultiCommodityHop(unittest.TestCase):
         self.assertFalse(cl.finished)
         cl.on_event(sell(5, "silver", 200))
         self.assertTrue(cl.finished)
+
+
+class TestEmptyLeg(unittest.TestCase):
+    def test_arrival_completes_empty_hop(self):
+        route = TradeRoute(hops=2, hops_list=[Hop("A", "a", "B", "b"), Hop("B", "b", "C", "c", "Gold", 10, 1, 2)])
+        cl = RouteChecklist(route, NAMES, docked=("A", "a"), created_at=T0)
+        cl.on_event({"timestamp": ts(1), "event": "Docked", "StarSystem": "B", "StationName": "b"})
+        self.assertEqual(cl.hop_index, 1)
