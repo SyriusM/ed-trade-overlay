@@ -1176,10 +1176,29 @@ class TradePanel:
         except Exception:
             pass
 
+    def _overview_follow_route(self, route) -> None:
+        """PORÓWNAJ: stacja startowa i cel bieżącego hopu wpisują się same (odświeżenie tylko przy zmianie celu)."""
+        hops = getattr(route, 'hops_list', None) or []
+        index = max(0, getattr(route, '_current_hop', 1) - 1)
+        if route is None or route.error or index >= len(hops):
+            return
+        hop = hops[index]
+        target = (hop.source_system, hop.source_station, hop.destination_system, hop.destination_station)
+        if target == getattr(self, '_overview_target', None):
+            return
+        self._overview_target = target
+        for var, value in zip((self.ov_from_system_var, self.ov_from_station_var, self.ov_to_system_var,
+                               self.ov_to_station_var), target):
+            var.set(value)
+        if str(self.ov_btn['state']) != tk.DISABLED:
+            self.refresh_overview_tab()
+
     def _render_route(self) -> None:
         """Karty hopow jak w Route Finder TCE: → kup tu / ← sprzedaj tam, po prawej dystans i zysk."""
         with self._route_lock:
             route = self._route
+        if route is not None:
+            self._overview_follow_route(route)
         for child in self.route_cards.winfo_children():
             child.destroy()
         if route is None:
@@ -1628,14 +1647,35 @@ class TradePanel:
 
     def _show_docked_station_inner(self, system_name: str, station_name: str) -> None:
         """Wpisz biezacy system/stacje w zakladki i odswiez Market (inne zakladki tylko wypelnione, bez sieci)."""
-        for var in (self.system_entry_var, self.materials_system_var, self.mining_system_var,
-                    self.commodity_system_var, self.market_system_var, self.nearby_system_var):
+        for var in (self.system_entry_var, self.materials_system_var, self.mining_system_var, self.commodity_system_var,
+                    self.market_system_var, self.nearby_system_var, self.journey_start_var, self.ov_from_system_var):
             var.set(system_name)
-        self.market_station_var.set(station_name)
-        self.nearby_station_var.set(station_name)
-        if str(self.market_btn['state']) != tk.DISABLED:
+        for var in (self.market_station_var, self.nearby_station_var, self.ov_from_station_var):
+            var.set(station_name)
+        # Wartości z Ustawień trafiają do pól stron (cel journey, rodzaj materiałów, minerał)
+        cfg = self.user_config
+        if cfg.get('journey_target_system'):
+            self.journey_end_var.set(cfg['journey_target_system'])
+        if cfg.get('material_kind'):
+            self.materials_kind_var.set(cfg['material_kind'])
+        if cfg.get('mining_mineral'):
+            self.mining_tab_mineral_var.set(cfg['mining_mineral'])
+        jump = self.context().get('jump_range')
+        if jump:
+            self.journey_range_var.set(f'{float(jump):.1f}')
+        # Odśwież od razu wszystko, co ma komplet danych (każda strona ma własny wątek i blokadę przycisku)
+        idle = lambda btn: str(btn['state']) != tk.DISABLED
+        if idle(self.market_btn):
             self.refresh_market_tab()
         self.refresh_nearby_tab()
+        if idle(self.system_refresh_btn):
+            self.refresh_system_tab()
+        if self.materials_kind_var.get() and idle(self.materials_btn):
+            self.refresh_materials_tab()
+        if self.mining_tab_mineral_var.get() and idle(self.mining_btn):
+            self.refresh_mining_tab()
+        if cfg.get('journey_target_system') and idle(self.journey_calc_btn):
+            self.refresh_journey_tab()
 
     def set_materials(self, event: dict) -> None:
         """Wolane z watku watchera (event Materials). Stan pod lockiem — przezyje nawet nieudane after()."""
