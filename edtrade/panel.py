@@ -18,6 +18,7 @@ from . import materials as mats
 from . import tce_theme as tce
 from .checklist import load_commodity_names
 from . import assess
+from . import trade as trade_mod
 from .filters import filter_from_config
 from datetime import datetime, timezone
 from .trade import age_hours as price_age_hours
@@ -120,6 +121,7 @@ class TradePanel:
         self.on_appearance_change = on_appearance_change
         self.on_verdict_display_change = on_verdict_display_change
         assess.set_display(self.user_config.get('verdict_icons', True), self.user_config.get('verdict_labels', True))
+        trade_mod.set_risk_profile(str(self.user_config.get('risk_profile', 'optimal')))
         self.fonts = tce.Fonts(self.window, scale=float(self.user_config.get('panel_font_scale', 1.0)))
         tce.apply_ttk_theme(self.window, self.fonts)
 
@@ -509,11 +511,19 @@ class TradePanel:
             ttk.Checkbutton(verdict_line, text=text, variable=var,
                             command=self._verdict_display_changed).pack(side=tk.LEFT, padx=(0, 16))
 
+        # Profil ryzyka — jak program wybiera okazje i trasy (OKOLICA, szybka trasa, przeplanowanie)
+        self.risk_profile_var = tk.StringVar(value=trade_mod.RISK_PROFILES[trade_mod.RISK_PROFILE])
+        ttk.Label(self.settings_frame, text='Profil ryzyka:').grid(row=15, column=0, sticky='w', padx=(0, 8), pady=4)
+        profile_combo = ttk.Combobox(self.settings_frame, textvariable=self.risk_profile_var,
+                                     values=list(trade_mod.RISK_PROFILES.values()), state='readonly')
+        profile_combo.grid(row=15, column=1, sticky='ew', pady=4)
+        profile_combo.bind('<<ComboboxSelected>>', lambda _e: self._risk_profile_changed())
+
         self.save_settings_btn = ttk.Button(self.settings_frame, text='Zapisz', command=self.save_settings)
-        self.save_settings_btn.grid(row=15, column=1, sticky='w', pady=(10, 4))
+        self.save_settings_btn.grid(row=16, column=1, sticky='w', pady=(10, 4))
 
         self.settings_status_var = tk.StringVar(value='')
-        ttk.Label(self.settings_frame, textvariable=self.settings_status_var).grid(row=16, column=1, sticky='w', pady=4)
+        ttk.Label(self.settings_frame, textvariable=self.settings_status_var).grid(row=17, column=1, sticky='w', pady=4)
 
         tce.uppercase_static_texts(self.window)
         self._render_context()
@@ -537,6 +547,19 @@ class TradePanel:
             self.nav.select_frame(start_page)
         self._bind_all_row_actions()
         self.window.bind('<Configure>', self._schedule_layout_save, add='+')
+
+    def _risk_profile_key(self) -> str:
+        return next((k for k, v in trade_mod.RISK_PROFILES.items() if v == self.risk_profile_var.get()), 'optimal')
+
+    def _risk_profile_changed(self) -> None:
+        """Na żywo: rankingi OKOLICY i ładowni z zapamiętanych danych (bez sieci); main czyta profil przy dokowaniu."""
+        trade_mod.set_risk_profile(self._risk_profile_key())
+        self.user_config['risk_profile'] = trade_mod.RISK_PROFILE
+        self._render_context()
+        if self._nearby_meta is not None:
+            self._render_nearby()
+        elif self._cargo_meta is not None:
+            self._render_cargo()
 
     def _copy_target_key(self) -> str:
         return next((k for k, v in COPY_TARGET_LABELS.items() if v == self.copy_target_var.get()), 'station')
@@ -609,7 +632,7 @@ class TradePanel:
             ship += f" · {ctx['jump_range']:.1f} ly"
         cargo = sum(int(c.get('Count') or 0) for c in ctx['cargo'])
         self.context_label.config(text=f'POZYCJA: {where}    STATEK: {ship}    ŁADUNEK: {cargo} t    '
-                                       f'FILTR: {self._market_filter().describe()}'.upper())
+                                       f'FILTR: {self._market_filter().describe()}    PROFIL: {trade_mod.RISK_PROFILE}'.upper())
 
     def _page_changed(self, title: str) -> None:
         self.title_bar.set_title(title)
@@ -1611,6 +1634,7 @@ class TradePanel:
             'max_data_age_days': max_age,
             'auto_copy_system': bool(self.auto_copy_var.get()),
             'copy_target': self._copy_target_key(),
+            'risk_profile': self._risk_profile_key(),
             'verdict_icons': bool(self.verdict_icons_var.get()),
             'verdict_labels': bool(self.verdict_labels_var.get()),
         })

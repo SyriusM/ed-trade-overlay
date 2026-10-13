@@ -17,11 +17,12 @@ from .watcher import JournalWatcher
 from .filters import filter_from_config
 from .trade import market_from_market_json, nearby_candidates_from_market, rank_trades, Hop, TradeRoute
 from .trade import (TradeEngine, ship_needs_large_pad, get_system_info, search_stations, find_material_traders,
-                    get_station_market,
+                    get_station_market, age_hours,
                     find_mining_hotspots, find_mineral_buyers)
 from .overlay import TradeOverlay, compact_cr
 from .session import SessionLedger
 from . import assess, verify
+from . import trade as trade_module
 from datetime import datetime, timezone
 import threading
 from .panel import TradePanel
@@ -152,6 +153,7 @@ class EDTradeOverlayApp:
         self._show_overlay = not args.no_overlay
         self.user_config = user_config_module.load_user_config()
         assess.set_display(self.user_config.get('verdict_icons', True), self.user_config.get('verdict_labels', True))
+        trade_module.set_risk_profile(str(self.user_config.get('risk_profile', 'optimal')))
         self.overlay = TradeOverlay() if self._show_overlay else None
         if self.overlay is not None:
             self.overlay.apply_appearance(float(self.user_config.get('bar_alpha', 0.75)),
@@ -426,9 +428,12 @@ class EDTradeOverlayApp:
             self._full_route_generation = generation
             quick = self._quick_route_of[1] if self._quick_route_of and self._quick_route_of[0] == generation else None
             if quick is not None and (route.error or (self.checklist is not None and self.checklist.route is quick
-                                                      and self.checklist.bought > 0)):
+                                                      and self.checklist.bought > 0)
+                                      or self._safer_quick(route, quick)):
                 # Spansh nie dał trasy albo gracz już kupuje wg szybkiej — zostaje szybka
-                logger.info("Zostaje szybka trasa (%s)", route.error or "zakup w toku")
+                buying = self.checklist is not None and self.checklist.route is quick and self.checklist.bought > 0
+                logger.info("Zostaje szybka trasa (%s)", route.error or ("zakup w toku" if buying
+                                                                        else "profil SAFE: pełna trasa ma stare ceny"))
                 quick._quick = False  # pełnej nie będzie — pasek przestaje czekać
                 if self.overlay:
                     self.overlay._refresh_now()
@@ -587,6 +592,13 @@ class EDTradeOverlayApp:
                                              verify.BUY, 0)
         if self.overlay:
             self.overlay._refresh_now()
+
+    def _safer_quick(self, full, quick) -> bool:
+        """Profil SAFE: pierwszy hop Spansh z ryzykownymi (starymi) cenami celu, a szybka trasa jest pewna → szybka."""
+        if trade_module.RISK_PROFILE != "safe" or not full.hops_list or not quick.hops_list:
+            return False
+        risk = lambda hop: assess.age_risk(age_hours(hop.dst_updated_at))
+        return risk(full.hops_list[0]) >= assess.RISKY_FROM and risk(quick.hops_list[0]) < assess.RISKY_FROM
 
     def _quick_route(self, system: str, station: str, generation: int) -> None:
         """Od razu po dokowaniu: najlepszy pojedynczy kurs, zanim Spansh policzy pełną trasę."""

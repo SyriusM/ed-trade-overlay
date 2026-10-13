@@ -582,13 +582,41 @@ RANK_MODES = {
 }
 
 
-def _rank_key(mode: str):
-    # Rankingi liczą zysk OCZEKIWANY (ważony świeżością cen), nie nominalny
+RISK_PROFILES = {"safe": "SAFE — pewne ceny, mniejsze ryzyko", "optimal": "OPTIMAL — zysk ważony pewnością",
+                 "risky": "RISKY — maksymalny zysk, stare ceny bez kary"}
+RISK_PROFILE = "optimal"  # ustawiane z configu (Ustawienia → Profil); rankingi czytają je przy każdym wywołaniu
+
+
+def set_risk_profile(profile: str) -> None:
+    global RISK_PROFILE
+    RISK_PROFILE = profile if profile in RISK_PROFILES else "optimal"
+
+
+def trade_risk(t) -> float:
+    """Ryzyko okazji 0–1 (wiek cen, płytki popyt, długi lot) — to samo, co w ocenie SAFE/RISKY."""
+    from . import assess
+    return assess.combine(assess.age_risk(t.age_hours), assess.demand_risk(t.demand, t.units),
+                          0.15 if t.travel_s > assess.LONG_TRIP_S else 0.0)
+
+
+def profile_weight(t, profile: Optional[str] = None) -> float:
+    """Mnożnik zysku wg profilu: RISKY 1 (nominalny), OPTIMAL pewność ceny, SAFE (1 − ryzyko)²."""
+    profile = profile or RISK_PROFILE
+    if profile == "risky":
+        return 1.0
+    if profile == "safe":
+        return (1 - trade_risk(t)) ** 2
+    return t.confidence
+
+
+def _rank_key(mode: str, profile: Optional[str] = None):
+    # Rankingi liczą zysk ważony profilem ryzyka (domyślnie OPTIMAL = ważony świeżością cen)
+    w = lambda t: profile_weight(t, profile)
     if mode == "total":
-        return lambda t: (t.expected_total, -t.travel_s)
+        return lambda t: (t.total_profit * w(t), -t.travel_s)
     if mode == "time":
-        return lambda t: (-t.travel_s, t.expected_total)
-    return lambda t: (t.expected_per_hour, t.expected_total)
+        return lambda t: (-t.travel_s, t.total_profit * w(t))
+    return lambda t: (t.profit_per_hour * w(t), t.total_profit * w(t))
 
 
 def candidate_trades(commodity: str, reference_system: str, units: int, buy_price: int, market_filter,
@@ -613,14 +641,16 @@ def candidate_trades(commodity: str, reference_system: str, units: int, buy_pric
     return trades
 
 
-def pick_best(candidates: list[NearbyTrade], mode: str = "per_hour") -> Optional[NearbyTrade]:
-    return max(candidates, key=_rank_key(mode)) if candidates else None
+def pick_best(candidates: list[NearbyTrade], mode: str = "per_hour",
+              profile: Optional[str] = None) -> Optional[NearbyTrade]:
+    return max(candidates, key=_rank_key(mode, profile)) if candidates else None
 
 
-def rank_trades(candidates_per_commodity: list[list[NearbyTrade]], mode: str = "per_hour") -> list[NearbyTrade]:
-    """Jeden wiersz na towar (najlepszy kupiec w danym trybie), posortowane wg trybu."""
-    best = [b for b in (pick_best(c, mode) for c in candidates_per_commodity) if b is not None]
-    best.sort(key=_rank_key(mode), reverse=True)
+def rank_trades(candidates_per_commodity: list[list[NearbyTrade]], mode: str = "per_hour",
+                profile: Optional[str] = None) -> list[NearbyTrade]:
+    """Jeden wiersz na towar (najlepszy kupiec w danym trybie i profilu ryzyka), posortowane."""
+    best = [b for b in (pick_best(c, mode, profile) for c in candidates_per_commodity) if b is not None]
+    best.sort(key=_rank_key(mode, profile), reverse=True)
     return best
 
 
