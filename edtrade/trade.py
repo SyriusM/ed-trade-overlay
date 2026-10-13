@@ -393,6 +393,82 @@ def find_commodity_sellers(
     return result[:size]
 
 
+@dataclass
+class MarketItem:
+    """Jeden towar na rynku stacji (Ardent)."""
+    name: str = ""
+    buy_price: int = 0
+    sell_price: int = 0
+    stock: int = 0
+    demand: int = 0
+    mean_price: int = 0
+    updated_at: str = ""
+
+
+@dataclass
+class StationMarket:
+    """Pełny rynek stacji: co tu kupisz (exports) i co tu sprzedasz (imports)."""
+    system_name: str = ""
+    station_name: str = ""
+    exports: list[MarketItem] = field(default_factory=list)
+    imports: list[MarketItem] = field(default_factory=list)
+    updated_at: str = ""
+    error: str = ""
+
+
+def get_station_market(system_name: str, station_name: str) -> StationMarket:
+    """Rynek stacji z Ardent /v2/system/name/<system>/commodities, przefiltrowany po nazwie stacji.
+
+    Ardent podaje sellPrice także przy demand=0 — "sprzedasz tu" liczy się tylko przy demand>0.
+    """
+    market = StationMarket(system_name=system_name, station_name=station_name)
+    url = f"https://api.ardent-insight.com/v2/system/name/{requests.utils.quote(system_name)}/commodities"
+    try:
+        resp = requests.get(url, headers={"User-Agent": "EdTradeOverlay/0.1"}, timeout=30)
+        if resp.status_code == 404:
+            market.error = f"System '{system_name}' nie znaleziony"
+            return market
+        resp.raise_for_status()
+        rows = resp.json()
+    except Exception as e:
+        logger.error("Ardent system commodities request failed: %s", e)
+        market.error = f"Błąd sieci: {e}"
+        return market
+
+    if not isinstance(rows, list):
+        market.error = "Nieoczekiwana odpowiedź Ardent"
+        return market
+
+    wanted = station_name.strip().lower()
+    rows = [r for r in rows if (r.get("stationName") or "").lower() == wanted]
+    if not rows:
+        market.error = f"Brak danych rynku dla stacji '{station_name}' w {system_name}"
+        return market
+
+    market.station_name = rows[0].get("stationName", station_name)
+    market.updated_at = max(r.get("updatedAt") or "" for r in rows)
+    for r in rows:
+        item = MarketItem(
+            name=r.get("commodityName", ""),
+            buy_price=r.get("buyPrice") or 0,
+            sell_price=r.get("sellPrice") or 0,
+            stock=r.get("stock") or 0,
+            demand=r.get("demand") or 0,
+            mean_price=r.get("meanPrice") or 0,
+            updated_at=r.get("updatedAt") or "",
+        )
+        if item.stock > 0 and item.buy_price > 0:
+            market.exports.append(item)
+        if item.demand > 0 and item.sell_price > 0:
+            market.imports.append(item)
+
+    market.exports.sort(key=lambda i: i.buy_price - i.mean_price)
+    market.imports.sort(key=lambda i: i.sell_price, reverse=True)
+    logger.info("get_station_market: %s/%s — %d exports, %d imports",
+                system_name, market.station_name, len(market.exports), len(market.imports))
+    return market
+
+
 SERVICE_FIELDS = (
     "shipyard", "outfitting", "blackMarket", "refuel", "repair",
     "interstellarFactors", "materialTrader", "technologyBroker",
@@ -806,18 +882,18 @@ class TradeEngine:
         for line in lines:
             line_stripped = line.strip()
 
-            # Parse: Buy ITEM xN at Station (price)
-            m = re.match(r"Buy\s+(\S.*?)\s+x(\d+)\s+at\s+(.+?)\s+\((\d+)[,]?\d*\)", line_stripped)
+            # Parse: Buy ITEM xN at Station (price[cr])
+            m = re.match(r"Buy\s+(\S.*?)\s+x(\d+)\s+at\s+(.+?)\s+\(([\d,]+)cr?\)", line_stripped)
             if m:
                 buy_item = m.group(1).strip()
                 buy_qty = int(m.group(2))
-                buy_price = int(m.group(3).replace(",", ""))
+                buy_price = int(m.group(4).replace(",", ""))
                 cargo = buy_qty
                 continue
 
-            # Parse: Sell ITEM xN at Station (price), profit X
+            # Parse: Sell ITEM xN at Station (price[cr]), profit X[cr] (profit może być ujemny)
             m = re.match(
-                r"Sell\s+(\S.*?)\s+x(\d+)\s+at\s+(.+?)\s+\((\d+)[,]?\d*\),\s+profit\s+(\d+)[,]?\d*",
+                r"Sell\s+(\S.*?)\s+x(\d+)\s+at\s+(.+?)\s+\(([\d,]+)cr?\),\s+profit\s+(-?[\d,]+)cr?",
                 line_stripped,
             )
             if m:
@@ -839,8 +915,8 @@ class TradeEngine:
                 if m:
                     hops += int(m.group(1))
 
-            # Parse total profit line
-            m = re.search(r"profit\s+([\d,]+)", line_stripped, re.IGNORECASE)
+            # Parse total profit line (profit może być ujemny)
+            m = re.search(r"profit\s+(-?[\d,]+)", line_stripped, re.IGNORECASE)
             if m:
                 profit = int(m.group(1).replace(",", ""))
 
