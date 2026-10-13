@@ -19,7 +19,7 @@ from .watcher import JournalWatcher
 from .filters import filter_from_config
 from .trade import market_from_market_json, nearby_candidates_from_market, rank_trades, Hop, TradeRoute
 from .trade import (TradeEngine, ship_needs_large_pad, get_system_info, search_stations, find_material_traders,
-                    get_station_market, age_hours, travel_seconds, apply_live_market, top_up_route,
+                    get_station_market, age_hours, travel_seconds, best_sales_for_cargo, apply_live_market, top_up_route,
                     find_mining_hotspots, find_mineral_buyers)
 from .overlay import TradeOverlay, compact_cr
 from .session import SessionLedger
@@ -347,6 +347,53 @@ class EDTradeOverlayApp:
             self.panel.update_context(cargo=self._cargo)
         logger.debug("Cargo: %d pozycji", len(self._cargo))
 
+    def _trade_cargo(self) -> list[dict]:
+        """Towar handlowy w ładowni (bez limpetów i ładunku misyjnego)."""
+        return [c for c in self._cargo if int(c.get("Count") or 0) > 0 and c.get("Name", "").lower() != "drones"
+                and not c.get("MissionID")]
+
+    def _free_capacity(self) -> float:
+        """Wolne miejsce: pojemność minus wszystko na pokładzie (też limpety i ładunek misyjny)."""
+        capacity = float(self._last_capacity or self.trade_engine.capacity or 0)
+        held = sum(int(c.get("Count") or 0) for c in self._cargo)
+        return max(0.0, capacity - held)
+
+    def _sell_cargo_first(self, system: str, station: str) -> bool:
+        """Ładownia ma towar spoza trasy → trasa 1-hop: sprzedaj go u najlepszego kupca (krok "kup" od razu ✓).
+
+        Bez tego nowa trasa kazałaby kupić pełną ładownię, której nie ma gdzie zmieścić."""
+        cargo = self._trade_cargo()
+        if not cargo:
+            return False
+        try:
+            best = best_sales_for_cargo(cargo, system, self._apply_market_filter(),
+                                        jump_range=float(self.trade_engine.ly_per or 30.0),
+                                        mode="per_hour")
+        except Exception:
+            logger.exception("Sprzedaż ładunku: wyszukiwanie kupców")
+            return False
+        if not best:
+            logger.info("Ładunek %s: brak kupca w zasięgu — liczę trasę na wolne miejsce", [c.get("Name") for c in cargo])
+            return False
+        if not self._commodity_names:
+            self._commodity_names = load_commodity_names()
+        # największy zysk z tego, co jest na pokładzie
+        t = max(best, key=lambda x: x.total_profit)
+        name = self._commodity_names.get(t.commodity.lower(), t.commodity)
+        hop = Hop(system, station, t.sell_system, t.sell_station, name, t.units, 0, t.sell_price, t.total_profit,
+                  t.distance, time.time(), _epoch(t.updated_at), t.distance_to_arrival)
+        route = TradeRoute(source_system=system, source_station=station, destination_system=t.sell_system,
+                           destination_station=t.sell_station, buy_item=name, buy_quantity=t.units, buy_price=0,
+                           sell_price=t.sell_price, profit_per_unit=t.sell_price, total_profit=t.total_profit,
+                           cargo_used=t.units, hops=1, hops_list=[hop])
+        logger.info("W ładowni %s ×%d — najpierw sprzedaż: %s/%s po %s cr", name, t.units, t.sell_system,
+                    t.sell_station, f"{t.sell_price:,}")
+        self._publish_route(route, system, station)
+        route._live_check = verify.LiveCheck(verify.OK, f"▶ SPRZEDAJ ŁADUNEK: {name.upper()} ×{t.units}", verify.BUY, 0)
+        if self.overlay:
+            self.overlay._refresh_now()
+        return True
+
     def _apply_market_filter(self):
         """Filtry z configu (Ustawienia mogą je zmienić w trakcie) + rozmiar statku → parametry trasy."""
         market_filter = filter_from_config(self.user_config, self._ship_large_pad)
@@ -373,7 +420,12 @@ class EDTradeOverlayApp:
             if not self._commodity_names:
                 self._commodity_names = load_commodity_names()
             try:  # wolne miejsce na każdym odcinku (też pustym dolocie) → towary na następny przystanek
-                top_up_route(route, int(self.trade_engine.capacity), self.trade_engine.capital, self._commodity_names)
+                # Miejsce = wolne + to, co z tej trasy już jest na pokładzie (limpety / misje / inny towar zajmują resztę)
+                aboard = {h.lower() for h in (route.hops_list[0].names if route.hops_list else [])}
+                route_cargo = sum(int(c.get("Count") or 0) for c in self._trade_cargo()
+                                  if self._commodity_names.get(c.get("Name", "").lower(), c.get("Name", "")).lower() in aboard)
+                top_up_route(route, int(self._free_capacity()) + route_cargo, self.trade_engine.capital,
+                             self._commodity_names)
             except Exception:
                 logger.exception("Błąd dopełniania ładowni na trasie")
             self.checklist = RouteChecklist(
@@ -508,7 +560,9 @@ class EDTradeOverlayApp:
             self._last_docked_event = event
 
         self._feed_checklist(event)
-        following = self.checklist is not None and self.checklist.follows_plan(system, station)
+        # Trasy nie przeliczamy, gdy gracz ją realizuje: dokuje w celu hopu ALBO wiezie towar hopu (postój po drodze)
+        following = self.checklist is not None and (self.checklist.follows_plan(system, station)
+                                                     or self.checklist.carrying())
         if self.panel is not None:
             self.panel.update_context(system=system, station=station)
 
@@ -548,14 +602,16 @@ class EDTradeOverlayApp:
         # Dokowanie w celu bieżącego hopu = gracz realizuje plan — nie nadpisujemy trasy
         route = None
         if following:
-            logger.info("Docked w celu hopu %d — trasa w toku, bez przeliczania", self.checklist.hop_index + 1)
+            logger.info("Docked (%s) — hop %d w toku, bez przeliczania", station, self.checklist.hop_index + 1)
+        elif self._sell_cargo_first(system, station):
+            pass  # w ładowni towar spoza trasy — najpierw jego sprzedaż (trasa 1-hop już opublikowana)
         else:
             self._apply_market_filter()
             self._sync_credits()
             self._dock_generation += 1
             generation = self._dock_generation
             threading.Thread(target=self._quick_route, args=(system, station, generation), daemon=True).start()
-            route = self.trade_engine.calculate_route_via_spansh(system, station)
+            route = self.trade_engine.calculate_route_via_spansh(system, station, capacity_override=self._free_capacity())
             self._full_route_generation = generation
             quick = self._quick_route_of[1] if self._quick_route_of and self._quick_route_of[0] == generation else None
             if quick is not None and (route.error or (self.checklist is not None and self.checklist.route is quick
@@ -709,7 +765,7 @@ class EDTradeOverlayApp:
 
         Szybkie (jedno zapytanie Ardent na towar, równolegle) — nie czeka na Spansh (40–180 s).
         """
-        capacity = int(self._last_capacity or self.trade_engine.capacity or 0)
+        capacity = int(self._free_capacity())
         cands = nearby_candidates_from_market(market, capacity, self._apply_market_filter(),
                                               jump_range=float(self.trade_engine.ly_per or 30.0))
         best = rank_trades(cands, "per_hour")

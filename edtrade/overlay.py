@@ -314,7 +314,8 @@ class TradeOverlay:
         self.meta_label.config(text="  ·  ".join(meta), fg=meta_color)  # krótkie — bez przycinania
         # Kilka towarów w ładowni: lista zamiast cen (ceny każdego są w panelu, w karcie hopu)
         route_text = (f"{display_cargo}  ·  {display_qty}T" if multi else display_cargo if not display_names else
-                      f"{display_cargo}  {display_buy:,} → {display_sell:,}") + f"  ·  ZYSK {compact_cr(route.total_profit)} CR"
+                      f"{display_cargo}  {display_buy:,} → {display_sell:,}" if display_buy else
+                      f"{display_cargo}  SPRZEDAJ PO {display_sell:,}") + f"  ·  ZYSK {compact_cr(route.total_profit)} CR"
         if cargo_warning:
             route_text += f"  ·  {cargo_warning}"
         self._set_fit(self.route_label, route_text.upper(), fg=tce.GREEN if route.total_profit > 0 else tce.RED)
