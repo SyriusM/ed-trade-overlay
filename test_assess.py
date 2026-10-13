@@ -21,7 +21,7 @@ def trade(per_t=3000, units=256, demand=5000, age=1, travel=300, ls=500):
 def test_best_fresh_deep_demand_is_optimal_and_strong():
     best, other = trade(), trade(per_t=500)
     a, b = assess.assess_all([best, other], assess.value_for_mode("per_hour"), capacity=256)
-    assert a.verdict == assess.OPTIMAL and a.degree > 0.8
+    assert a.verdict == assess.OPTIMAL and a.badge == "= OPTIMAL"
     assert "best in list" in a.strengths and "fresh prices" in a.strengths
     assert b.verdict == assess.SAFE  # mały zysk, ale pewny
 
@@ -41,7 +41,7 @@ def test_shallow_demand_raises_risk():
 def test_risk_degree_grows_with_age():
     d3 = assess.assess_all([trade(age=60, demand=300)], assess.value_for_mode("per_hour"))[0]
     d7 = assess.assess_all([trade(age=24 * 7, demand=300)], assess.value_for_mode("per_hour"))[0]
-    assert d3.verdict == d7.verdict == assess.RISKY and d7.degree > d3.degree
+    assert d3.verdict == d7.verdict == assess.RISKY and d7.shade > d3.shade
 
 
 def test_partial_hold_is_weakness():
@@ -49,10 +49,23 @@ def test_partial_hold_is_weakness():
     assert "only 100/256 t" in a.weaknesses
 
 
-def test_colour_intensity_levels():
-    weak, strong = tce.verdict_color("optimal", 0.1), tce.verdict_color("optimal", 0.99)
-    assert strong == tce.GREEN and weak != strong
-    assert tce.verdict_tag("risky", 0.99) == "v_risky_3" and tce.verdict_tag("safe", 0.0) == "v_safe_0"
+def test_colour_gradients():
+    assert tce.verdict_color("optimal", 0.0) == tce.verdict_color("optimal", 1.0) == tce.LIME
+    assert tce.verdict_color("safe", 0.0) == "#4cff4c" and tce.verdict_color("safe", 1.0) == "#1e9a32"
+    assert tce.verdict_color("risky", 0.0) == "#ff3b30" and tce.verdict_color("risky", 1.0) == "#b01a1a"
+    assert tce.verdict_tag("risky", 0.99) == "v_risky_5" and tce.verdict_tag("safe", 0.0) == "v_safe_0"
+
+
+def test_very_safe_is_darkest_green():
+    a = assess.assess_all([trade(per_t=3000), trade(per_t=500, demand=50000)], assess.value_for_mode("per_hour"))[1]
+    assert a.verdict == assess.SAFE and a.shade == 1.0 and a.badge == "▲ VERY SAFE"
+
+
+def test_risky_high_profit_brighter_than_stale():
+    fresh_shallow = assess.assess_all([trade(age=1, demand=256, travel=40 * 60)], assess.value_for_mode("per_hour"))[0]
+    stale = assess.assess_all([trade(age=24 * 10, demand=256)], assess.value_for_mode("per_hour"))[0]
+    assert fresh_shallow.verdict == stale.verdict == assess.RISKY
+    assert fresh_shallow.shade < stale.shade
 
 
 def test_route_hop_verdict():
@@ -63,7 +76,7 @@ def test_route_hop_verdict():
 def test_cargo_sell_here_when_local_price_close():
     best = trade(per_t=3000)  # sprzedaż 4000 gdzie indziej
     a = assess.advise_cargo(100, best, None, here_price=3900, mean_price=3500)
-    assert a.action == assess.SELL_HERE and a.badge == "▲ SELL HERE" and a.verdict == "optimal"
+    assert a.action == assess.SELL_HERE and a.badge == "= SELL HERE" and a.verdict == "optimal"
     assert "no trip" in a.strengths
 
 
@@ -81,3 +94,8 @@ def test_cargo_hold_on_loss_no_buyer_or_below_mean():
     assert loss.action == assess.HOLD and loss.threats == ["loss 4,000 cr/t"]
     low = assess.advise_cargo(10, None, None, here_price=500, mean_price=1000)
     assert low.action == assess.HOLD and low.verdict == "hold" and "50% below" in low.weaknesses[0]
+
+
+def test_swot_plus_minus():
+    a = assess.assess_all([trade(age=24 * 5)], assess.value_for_mode("per_hour"))[0]
+    assert a.swot_text().startswith("▲S: best in list") and "▼T: prices 5 d" in a.swot_text()

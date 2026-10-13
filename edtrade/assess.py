@@ -9,19 +9,21 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 SAFE, OPTIMAL, RISKY = "safe", "optimal", "risky"
-ICONS = {OPTIMAL: "▲", SAFE: "●", RISKY: "▼"}
+ICONS = {OPTIMAL: "=", SAFE: "▲", RISKY: "▼"}
 LABELS = {OPTIMAL: "OPTIMAL", SAFE: "SAFE", RISKY: "RISKY"}
 
 RISKY_FROM = 0.45     # ryzyko od tego progu → RISKY
 OPTIMAL_FROM = 0.75   # wartość ≥ 75% najlepszej (przy umiarkowanym ryzyku) → OPTIMAL
 SAFE_UNTIL = 0.25     # niskie ryzyko, mniejszy zysk → SAFE
+VERY_SAFE_FROM = 0.8  # shade SAFE od tego progu → "VERY SAFE" (ryzyko ≤ 0.05)
 LONG_TRIP_S = 30 * 60
 
 
 @dataclass
 class Assessment:
     verdict: str
-    degree: float                      # 0–1: jak mocno pasuje do werdyktu (natężenie koloru)
+    shade: float  # pozycja w gradiencie klasy: SAFE 0 zielony → 1 ciemnozielony (VERY SAFE);
+                  # RISKY 0 czerwony (wysoki zysk) → 1 ciemnoczerwony (okazji pewnie już nie ma)
     value: float                       # 0–1 względem najlepszej okazji na liście
     risk: float                        # 0–1
     strengths: list[str] = field(default_factory=list)
@@ -31,11 +33,14 @@ class Assessment:
 
     @property
     def badge(self) -> str:
+        if self.verdict == SAFE and self.shade >= VERY_SAFE_FROM:
+            return f"{ICONS[SAFE]} VERY SAFE"
         return f"{ICONS[self.verdict]} {LABELS[self.verdict]}"
 
     def swot_text(self) -> str:
-        parts = [(k, v) for k, v in (("S", self.strengths), ("W", self.weaknesses),
-                                     ("O", self.opportunities), ("T", self.threats)) if v]
+        """Strzałki (czytelniejsze niż +/−): ▲ za (S, O), ▼ przeciw (W, T): "▲S: short trip · ▼T: prices 5 d"."""
+        parts = [(k, v) for k, v in (("▲S", self.strengths), ("▼W", self.weaknesses),
+                                     ("▲O", self.opportunities), ("▼T", self.threats)) if v]
         return "  ·  ".join(f"{k}: {', '.join(v)}" for k, v in parts)
 
 
@@ -70,14 +75,16 @@ def combine(*risks: float) -> float:
 
 
 def classify(value: float, risk: float) -> tuple[str, float]:
+    """(werdykt, shade). OPTIMAL ma jeden kolor (limonka); SAFE i RISKY mają gradient."""
     if risk >= RISKY_FROM:
-        return RISKY, min(1.0, (risk - RISKY_FROM) / (1 - RISKY_FROM) * 0.7 + 0.3)
+        gone = (risk - RISKY_FROM) / (1 - RISKY_FROM)  # im wyższe ryzyko, tym bardziej "już nie ma"
+        return RISKY, min(1.0, 0.65 * gone + 0.35 * (1 - value))
     if value >= OPTIMAL_FROM:
-        return OPTIMAL, min(1.0, (value - OPTIMAL_FROM) / (1 - OPTIMAL_FROM) * 0.6 + 0.4 * (1 - risk / RISKY_FROM))
+        return OPTIMAL, 0.0
     if risk <= SAFE_UNTIL:
-        return SAFE, min(1.0, 0.3 + 0.4 * (1 - risk / SAFE_UNTIL) + 0.3 * value)
-    # umiarkowane ryzyko przy przeciętnym zysku — słabe RISKY
-    return RISKY, 0.2 + 0.3 * (risk - SAFE_UNTIL) / (RISKY_FROM - SAFE_UNTIL)
+        return SAFE, 1 - risk / SAFE_UNTIL  # ryzyko 0 → VERY SAFE (ciemnozielony)
+    # umiarkowane ryzyko przy przeciętnym zysku — RISKY z jasnej strony skali
+    return RISKY, 0.35 * (1 - value)
 
 
 def assess_trade(trade, best_value: float, value_of, capacity: int = 0) -> Assessment:
@@ -143,7 +150,7 @@ def assess_route_hop(age_h: Optional[float]) -> tuple[str, float]:
 # --- Ładownia: trzymać czy sprzedać? -------------------------------------------------------------
 
 SELL_HERE, SELL_THERE, HOLD = "sell_here", "sell_there", "hold"
-CARGO_BADGES = {SELL_HERE: "▲ SELL HERE", SELL_THERE: "► SELL THERE", HOLD: "■ HOLD"}
+CARGO_BADGES = {SELL_HERE: "= SELL HERE", SELL_THERE: "► SELL THERE", HOLD: "■ HOLD"}
 
 
 @dataclass
@@ -165,8 +172,8 @@ def advise_cargo(count: int, best=None, best_assessment: Optional[Assessment] = 
     there_expected = there_price * (best.confidence if best is not None else 0)
     top_price = max(here_price, there_price)
 
-    def hold(degree: float, **swot) -> CargoAdvice:
-        a = CargoAdvice("hold", degree, value=0.0, risk=0.0, action=HOLD)
+    def hold(shade: float, **swot) -> CargoAdvice:
+        a = CargoAdvice("hold", shade, value=0.0, risk=0.0, action=HOLD)
         for key, items in swot.items():
             getattr(a, key).extend(items)
         return a
@@ -190,11 +197,11 @@ def advise_cargo(count: int, best=None, best_assessment: Optional[Assessment] = 
             a.weaknesses.append(f"elsewhere +{there_price - here_price:,} cr/t")
         if paid_price:
             a.opportunities.append(f"profit {here_price - paid_price:,} cr/t")
-        a.degree = 1.0 if here_price >= there_price else 0.6 + 0.4 * here_price / there_price
+        a.shade = 0.0  # OPTIMAL — jeden kolor (limonka)
         return a
 
     base = best_assessment or Assessment(SAFE, 0.5, 1.0, 0.0)
-    a = CargoAdvice(base.verdict, base.degree, value=base.value, risk=base.risk, action=SELL_THERE,
+    a = CargoAdvice(base.verdict, base.shade, value=base.value, risk=base.risk, action=SELL_THERE,
                     strengths=list(base.strengths), weaknesses=list(base.weaknesses),
                     opportunities=list(base.opportunities), threats=list(base.threats))
     gain = (there_price - here_price) * count

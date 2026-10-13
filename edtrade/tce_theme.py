@@ -20,9 +20,18 @@ GREEN = "#4cff4c"
 RED = "#ff3b30"
 BLUE = "#5ab4ff"
 
-# Werdykty oceny okazji (edtrade/assess.py): kolor wg klasy, natężenie wg stopnia (4 poziomy)
-VERDICT_COLORS = {"optimal": GREEN, "safe": BLUE, "risky": RED, "hold": "#ffd23f"}
-VERDICT_LEVELS = 4
+# Werdykty oceny okazji (edtrade/assess.py): każda klasa ma gradient (start → koniec), shade 0–1 wybiera kolor.
+# OPTIMAL limonka; SAFE zielony → ciemnozielony (VERY SAFE); RISKY czerwony (wysoki zysk) → ciemnoczerwony
+# (okazji pewnie już nie ma); HOLD żółty → bursztynowy.
+LIME = "#b8ff2e"
+VERDICT_GRADIENTS = {
+    "optimal": (LIME, LIME),
+    "safe": ("#4cff4c", "#1e9a32"),
+    "risky": ("#ff3b30", "#b01a1a"),
+    "hold": ("#ffd23f", "#d08a00"),
+}
+VERDICT_COLORS = {k: v[0] for k, v in VERDICT_GRADIENTS.items()}
+VERDICT_LEVELS = 6
 
 
 def _mix(c1: str, c2: str, t: float) -> str:
@@ -31,15 +40,19 @@ def _mix(c1: str, c2: str, t: float) -> str:
     return "#" + "".join(f"{round(x + (y - x) * t):02x}" for x, y in zip(a, b))
 
 
-def verdict_color(verdict: str, degree: float, bg: str = ROW_BG) -> str:
-    """Słaby stopień = kolor przygaszony w stronę tła, mocny = pełny kolor."""
-    level = min(VERDICT_LEVELS - 1, int(max(0.0, min(1.0, degree)) * VERDICT_LEVELS))
-    return _mix(bg, VERDICT_COLORS[verdict], 0.45 + 0.55 * level / (VERDICT_LEVELS - 1))
+def _level(shade: float) -> int:
+    return min(VERDICT_LEVELS - 1, int(max(0.0, min(1.0, shade)) * VERDICT_LEVELS))
 
 
-def verdict_tag(verdict: str, degree: float) -> str:
-    level = min(VERDICT_LEVELS - 1, int(max(0.0, min(1.0, degree)) * VERDICT_LEVELS))
-    return f"v_{verdict}_{level}"
+def verdict_color(verdict: str, shade: float) -> str:
+    """Kolor z gradientu klasy (skwantowany do VERDICT_LEVELS, tak jak tagi tabel)."""
+    start, end = VERDICT_GRADIENTS[verdict]
+    return _mix(start, end, _level(shade) / (VERDICT_LEVELS - 1))
+
+
+def verdict_tag(verdict: str, shade: float) -> str:
+    return f"v_{verdict}_{_level(shade)}"
+
 
 # Pierwsza dostępna — TCE używa wąskiego, "technicznego" kroju
 FONT_CANDIDATES = (
@@ -238,7 +251,7 @@ class DataTable(tk.Frame):
         self.tree.tag_configure("dim", foreground=ORANGE_DIM)
         self.tree.tag_configure("good", foreground=GREEN)
         self.tree.tag_configure("bad", foreground=RED)
-        for verdict in VERDICT_COLORS:
+        for verdict in VERDICT_GRADIENTS:
             for level in range(VERDICT_LEVELS):
                 self.tree.tag_configure(f"v_{verdict}_{level}",
                                         foreground=verdict_color(verdict, (level + 0.5) / VERDICT_LEVELS))

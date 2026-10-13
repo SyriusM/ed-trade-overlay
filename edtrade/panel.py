@@ -28,8 +28,8 @@ from .trade import (get_system_info, search_stations, find_material_traders, fin
 COMMODITY_MODES = ('Kup', 'Sprzedaj')
 PAGE_HINTS = {
     'Trasa': 'Najlepsza trasa z bieżącej stacji — liczy się sama po dokowaniu, kroki odhaczają się z gry.',
-    'Okolica': '▲ OPTIMAL · ● SAFE · ▼ RISKY · ■ HOLD — jaśniej = mocniej. Klik: SWOT pod tabelą · '
-               'dwuklik: kopiuj system.',
+    'Okolica': '= OPTIMAL · ▲ SAFE (ciemniej = VERY SAFE) · ▼ RISKY (ciemniej = pewnie już nie ma) · ■ HOLD · '
+               'klik: SWOT · dwuklik: kopiuj system',
     'Porównaj': 'Bieżąca stacja vs cel (jak Trade Overview w TCE). Otwórz z OKOLICY: prawy klik → Porównaj.',
     'Market': 'Pełny rynek jednej stacji. Wypełnia się sam po dokowaniu.',
     'Towary': 'Gdzie najtaniej kupić / najdrożej sprzedać dowolny towar. Dwuklik: kopiuj system.',
@@ -168,7 +168,7 @@ class TradePanel:
         self.nearby_modes.pack(fill=tk.X, padx=10, pady=(4, 2))
         self.nearby_header = tce.SectionHeader(self.tab_nearby, 'Kup tutaj → sprzedaj w okolicy', self.fonts)
         self.nearby_header.pack(fill=tk.X, padx=10, pady=(6, 2))
-        trade_columns = [('verdict', 'Ocena', 105, 'w'), ('commodity', 'Towar', 160, 'w'), ('buy', 'Kup', 70, 'e'), ('station', 'Sprzedaj w', 170, 'w'),
+        trade_columns = [('verdict', 'Ocena', 135, 'w'), ('commodity', 'Towar', 160, 'w'), ('buy', 'Kup', 70, 'e'), ('station', 'Sprzedaj w', 170, 'w'),
                          ('system', 'System', 140, 'w'), ('sell', 'Cena', 70, 'e'), ('per_t', 'Zysk/t', 70, 'e'),
                          ('total', 'Zysk', 100, 'e'), ('time', 'Czas', 60, 'e'), ('per_h', 'CR/H', 100, 'e'),
                          ('distance', 'Odl.', 60, 'e'), ('arrival', 'LS', 60, 'e'), ('pad', 'Pad', 40, 'center'),
@@ -1151,13 +1151,14 @@ class TradePanel:
         where = f' → {trade.sell_station.upper()}' if trade.sell_station else ''
         self.nearby_swot.config(text=f'{verdict.badge}  {name.upper()}{where}:  '
                                      + (verdict.swot_text() or 'brak uwag').upper(),
-                                fg=tce.verdict_color(verdict.verdict, verdict.degree, tce.BG))
+                                fg=tce.verdict_color(verdict.verdict, verdict.shade))
 
     @staticmethod
     def _trade_sort(t, verdict=None) -> dict:
         # sortowanie po ocenie: OPTIMAL > SAFE > RISKY, w klasie wg stopnia
-        rank = {'optimal': 2, 'safe': 1, 'risky': 0}
-        score = (rank[verdict.verdict] + (verdict.degree if verdict.verdict != 'risky' else 1 - verdict.degree)) \
+        # OPTIMAL > VERY SAFE > SAFE > RISKY (wysoki zysk) > RISKY (pewnie już nie ma)
+        rank = {'optimal': 3, 'safe': 2, 'risky': 1, 'hold': 0}
+        score = (rank[verdict.verdict] + (verdict.shade if verdict.verdict == 'safe' else 1 - verdict.shade) * 0.99) \
             if verdict is not None else 0
         return {'verdict': score, 'buy': t.buy_price, 'sell': t.sell_price, 'per_t': t.profit_per_unit, 'total': t.total_profit,
                 'time': t.travel_s, 'per_h': t.profit_per_hour, 'distance': t.distance, 'arrival': t.distance_to_arrival,
@@ -1217,7 +1218,7 @@ class TradePanel:
             self.nearby_table.set_rows([self._trade_row(t, names, True, v) for t, v in zip(trades, verdicts)],
                                        sort_values=[self._trade_sort(t, v) for t, v in zip(trades, verdicts)],
                                        payloads=trades,
-                                       tags=[tce.verdict_tag(v.verdict, v.degree) for v in verdicts])
+                                       tags=[tce.verdict_tag(v.verdict, v.shade) for v in verdicts])
             self._show_swot(trades[0] if trades else None)
             hold = f'ładownia {capacity} t' if capacity else 'ładownia 304 t (domyślnie — czekam na Loadout)'
             if error:
@@ -1331,9 +1332,9 @@ class TradePanel:
                 rows.append(self._trade_row(best, names, False, advice))
                 payload = best
                 total += best.total_profit
-            sorts.append({'verdict': {'sell_here': 3, 'sell_there': 2, 'hold': 0}[advice.action] + advice.degree,
+            sorts.append({'verdict': {'sell_here': 3, 'sell_there': 2, 'hold': 0}[advice.action] + advice.shade,
                           'units': count})
-            tags.append(tce.verdict_tag(advice.verdict, advice.degree))
+            tags.append(tce.verdict_tag(advice.verdict, advice.shade))
             payloads.append(payload)
             self._assessments[id(payload)] = advice
         self.nearby_cargo_table.set_rows(rows, sort_values=sorts, tags=tags, payloads=payloads)

@@ -273,9 +273,9 @@ class TradeOverlay:
             meta.append("CENY " + (f"{sell_age:.0f}H" if sell_age < 48 else f"{sell_age / 24:.0f}D"))
         if current is not None:
             # Werdykt etapu: trasa ze Spansh jest zyskowo najlepsza — o OPTIMAL/RISKY decyduje pewność cen celu
-            verdict, degree = assess.assess_route_hop(sell_age)
+            verdict, shade = assess.assess_route_hop(sell_age)
             meta.insert(0, f"{assess.ICONS[verdict]} {assess.LABELS[verdict]}")
-            meta_color = tce.verdict_color(verdict, degree, tce.ROW_BG)
+            meta_color = tce.verdict_color(verdict, shade)
         if getattr(route, '_scoopable', False):
             meta.append("⛽")
 
