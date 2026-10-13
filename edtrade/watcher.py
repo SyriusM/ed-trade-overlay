@@ -58,7 +58,8 @@ def _find_journal_dir() -> Optional[Path]:
     return None
 
 # Pola interesujących nas eventów
-INTERESTING_EVENTS = {"Docked", "Loadout", "StartedSession", "Location", "Cargo", "Market", "Materials", "MarketBuy", "MarketSell", "LoadGame"}
+INTERESTING_EVENTS = {"Docked", "Loadout", "StartedSession", "Location", "Cargo", "Market", "Materials", "MarketBuy", "MarketSell", "LoadGame",
+                      "FSDJump"}
 
 
 class JournalWatcher:
@@ -75,6 +76,7 @@ class JournalWatcher:
         on_materials: Optional[Callable] = None,
         on_trade: Optional[Callable] = None,
         on_session: Optional[Callable] = None,
+        on_caught_up: Optional[Callable] = None,
     ):
         self.journal_dir = journal_dir
         if self.journal_dir is None:
@@ -86,7 +88,8 @@ class JournalWatcher:
         self.on_market = on_market
         self.on_materials = on_materials
         self.on_trade = on_trade
-        self.on_session = on_session  # LoadGame — start sesji gry (podsumowanie zarobków)
+        self.on_session = on_session
+        self.on_caught_up = on_caught_up  # po wczytaniu historii journala przy starcie (stan "teraz" jest znany)  # LoadGame — start sesji gry (podsumowanie zarobków)
         self._latest_file: Optional[Path] = None
         self._file_pos: int = 0
         self._running = False
@@ -166,6 +169,11 @@ class JournalWatcher:
         self._load_market_json()
         events = self._read_new_lines()
         self._dispatch(events)
+        if self.on_caught_up:
+            try:
+                self.on_caught_up()
+            except Exception:
+                logger.exception("Błąd w on_caught_up")
 
         while self._running:
             try:
@@ -251,7 +259,7 @@ class JournalWatcher:
                         self.on_trade(ev)
                     except Exception:
                         logger.exception("Błąd w on_trade")
-            elif event_type == "Location":
+            elif event_type in ("Location", "FSDJump"):
                 system = ev.get("StarSystem", "")
                 station = ev.get("Station", "")
                 logger.debug("Location: %s%s", system, f"/{station}" if station else "")

@@ -190,6 +190,8 @@ class EDTradeOverlayApp:
             on_materials=self._on_materials,
             on_trade=self._on_trade,
             on_session=self._on_session,
+            on_location=self._on_location,
+            on_caught_up=self._on_caught_up,
         )
         self._dock_count = 0
         self._last_system = ""
@@ -219,6 +221,9 @@ class EDTradeOverlayApp:
         self._copied_system = ""
         self._live_market = None
         self._replanned_for = None
+        self._flight_system = ""  # system po ostatnim skoku (w locie); "" = zadokowany / nieznane
+        self._caught_up = False
+        self._pending_dock: Optional[dict] = None  # ostatnie dokowanie z historii journala (przed _on_caught_up)
         self._dock_generation = 0
         self._full_route_generation = 0
         self._quick_route_of = None  # (generation, TradeRoute) — szybka trasa z ostatniego dokowania
@@ -547,6 +552,41 @@ class EDTradeOverlayApp:
             self._last_system = ""
             self._on_docked({"StarSystem": system, "StationName": station})
 
+    def _on_location(self, event: dict):
+        """FSDJump / Location w locie: pozycja na pasku i w panelu; z cudzym towarem w ładowni — od razu,
+        gdzie go sprzedać z TEGO systemu (bez czekania na dokowanie)."""
+        system = event.get("StarSystem", "")
+        if not system:
+            return
+        if event.get("Docked"):
+            self._flight_system = ""
+            return  # dokowanie obsługuje _on_docked
+        self._pending_dock = None  # odlot — dawne dokowanie już nieaktualne
+        self._flight_system = system
+        self._last_system = ""  # ponowne dokowanie w tej samej stacji ma znów przeliczyć
+        if self.panel is not None:
+            self.panel.update_context(system=system, station="")
+        if self.overlay:
+            self.overlay.set_system_info(f"{system} · w locie")
+        if self._caught_up:  # historia journala przy starcie — tylko pozycja, bez zapytań sieciowych
+            self._plan_in_flight()
+
+    def _plan_in_flight(self) -> None:
+        system = self._flight_system
+        if not system or (self.checklist is not None and self.checklist.carrying()) or not self._trade_cargo():
+            return
+        threading.Thread(target=self._sell_cargo_first, args=(system, ""), daemon=True).start()
+
+    def _on_caught_up(self) -> None:
+        """Start w locie (np. po aktualizacji programu): stan z journala znany — zaplanuj sprzedaż ładunku."""
+        self._caught_up = True
+        logger.info("Journal wczytany%s", f" — w locie w {self._flight_system}" if self._flight_system else "")
+        if self._flight_system:
+            self._plan_in_flight()
+        elif self._pending_dock is not None:
+            self._on_docked(self._pending_dock)  # stoisz w stacji — trasa od niej
+        self._pending_dock = None
+
     def _on_docked(self, event: dict):
         """Reaguje na event Docked — wylicza najlepszą trasę."""
         self.session.on_event(event)  # stacja dla kolejnych transakcji w podsumowaniu
@@ -559,12 +599,19 @@ class EDTradeOverlayApp:
         if event.get("SystemAddress"):
             self._last_docked_event = event
 
+        self._flight_system = ""
         self._feed_checklist(event)
         # Trasy nie przeliczamy, gdy gracz ją realizuje: dokuje w celu hopu ALBO wiezie towar hopu (postój po drodze)
         following = self.checklist is not None and (self.checklist.follows_plan(system, station)
                                                      or self.checklist.carrying())
         if self.panel is not None:
             self.panel.update_context(system=system, station=station)
+
+        if not self._caught_up:
+            # Historia journala przy starcie: tylko stan (bez Spansh dla każdej dawnej stacji) — trasę liczy
+            # _on_caught_up raz, od miejsca, w którym gracz jest TERAZ
+            self._pending_dock = event
+            return
 
         # Unikaj redundancyjnych wyliczeń — ten sam system/stacja
         key = f"{system}/{station}"
@@ -856,7 +903,10 @@ class EDTradeOverlayApp:
                         self._on_market(json.load(f))
                 except (json.JSONDecodeError, OSError) as e:
                     logger.warning("REFRESH: błąd odczytu Market.json: %s", e)
-            if "/" in self._last_system:
+            if self._flight_system:  # w locie: plan od bieżącego systemu (nie od ostatniej stacji)
+                self.checklist = None
+                self._plan_in_flight()
+            elif "/" in self._last_system:
                 system, station = self._last_system.split("/", 1)
                 event = self._last_docked_event
                 if (event.get("StarSystem"), event.get("StationName")) != (system, station):
