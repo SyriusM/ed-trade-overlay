@@ -58,8 +58,7 @@ def _find_journal_dir() -> Optional[Path]:
     return None
 
 # Pola interesujących nas eventów
-INTERESTING_EVENTS = {"Docked", "Loadout", "StartedSession", "Location", "Cargo", "Market", "Materials", "MarketBuy", "MarketSell",
-                      "LoadGame"}
+INTERESTING_EVENTS = {"Docked", "Loadout", "StartedSession", "Location", "Cargo", "Market", "Materials", "MarketBuy", "MarketSell", "LoadGame"}
 
 
 class JournalWatcher:
@@ -75,6 +74,7 @@ class JournalWatcher:
         on_market: Optional[Callable] = None,
         on_materials: Optional[Callable] = None,
         on_trade: Optional[Callable] = None,
+        on_session: Optional[Callable] = None,
     ):
         self.journal_dir = journal_dir
         if self.journal_dir is None:
@@ -86,6 +86,7 @@ class JournalWatcher:
         self.on_market = on_market
         self.on_materials = on_materials
         self.on_trade = on_trade
+        self.on_session = on_session  # LoadGame — start sesji gry (podsumowanie zarobków)
         self._latest_file: Optional[Path] = None
         self._file_pos: int = 0
         self._running = False
@@ -230,9 +231,15 @@ class JournalWatcher:
                     except Exception:
                         logger.exception("Błąd w on_materials")
             elif event_type == "LoadGame":
+                # Saldo (kapitał dla tras) i start sesji gry (podsumowanie zarobków)
                 if ev.get("Credits") is not None:
                     self.credits = int(ev["Credits"])
                     logger.debug("LoadGame: saldo %d cr", self.credits)
+                if self.on_session:
+                    try:
+                        self.on_session(ev)
+                    except Exception:
+                        logger.exception("Błąd w on_session")
             elif event_type in ("MarketBuy", "MarketSell"):
                 if self.credits is not None:
                     if event_type == "MarketBuy":
