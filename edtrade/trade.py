@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import requests
+
+from .i18n import t
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -431,23 +433,23 @@ def get_station_market(system_name: str, station_name: str) -> StationMarket:
     try:
         resp = requests.get(url, headers={"User-Agent": "EdTradeOverlay/0.1"}, timeout=30)
         if resp.status_code == 404:
-            market.error = f"System '{system_name}' nie znaleziony"
+            market.error = t("trade.system_not_found", system=system_name)
             return market
         resp.raise_for_status()
         rows = resp.json()
     except Exception as e:
         logger.error("Ardent system commodities request failed: %s", e)
-        market.error = f"Błąd sieci: {e}"
+        market.error = t("trade.network_error", error=e)
         return market
 
     if not isinstance(rows, list):
-        market.error = "Nieoczekiwana odpowiedź Ardent"
+        market.error = t("trade.unexpected_response")
         return market
 
     wanted = station_name.strip().lower()
     rows = [r for r in rows if (r.get("stationName") or "").lower() == wanted]
     if not rows:
-        market.error = f"Brak danych rynku dla stacji '{station_name}' w {system_name}"
+        market.error = t("trade.no_market", station=station_name, system=system_name)
         return market
 
     market.station_name = rows[0].get("stationName", station_name)
@@ -505,12 +507,9 @@ class NearbyTrade:
         return self.total_profit * 3600 / self.travel_s if self.travel_s else 0.0
 
 
-# Tryby rankingu handlu w okolicy (jak sortowanie zysku w Trade Advisor TCE + "czas to pieniądz")
-RANK_MODES = {
-    "total": "Największy zysk",
-    "per_hour": "Najszybszy zysk (cr/h)",
-    "time": "Najkrótsza droga",
-}
+# Tryby rankingu handlu w okolicy (jak sortowanie zysku w Trade Advisor TCE + "czas to pieniądz").
+# Nazwy wyświetlane: klucze rank.<tryb> w i18n.py.
+RANK_MODES = ("total", "per_hour", "time")
 
 
 def _rank_key(mode: str):
@@ -992,19 +991,20 @@ class TradeEngine:
 
             output = result.stdout.strip()
             if not output:
-                route.error = "Trade Dangerous zwrócił pusty wynik (brak opłacalnych tras?)"
+                route.error = t("trade.td_empty")
                 return route
 
             route = self._parse_output(output, system, station)
 
         except subprocess.TimeoutExpired:
-            route.error = "Trade Dangerous przekroczył limit 120s"
+            route.error = t("trade.td_timeout")
             logger.error("TD timeout")
         except FileNotFoundError:
-            route.error = f"Nie znaleziono: {self.py_path}"
+            route.error = t("trade.not_found", path=self.py_path)
             logger.error("TD binary not found: %s", self.py_path)
         except Exception as e:
-            route.error = f"Wyjątek: {e}"
+            route.error = t("trade.exception", error=e)
+
             logger.exception("TD exception")
 
         self._last_result = route
@@ -1145,13 +1145,13 @@ class TradeEngine:
             job_data = resp.json()
             job_id = job_data.get("job")
             if not job_id:
-                route.error = f"Brak job_id w odpowiedzi: {job_data}"
+                route.error = t("trade.no_job_id", data=job_data)
                 logger.error("Spansh no job_id: %s", job_data)
                 self._last_result = route
                 return route
             logger.info("Spansh job queued: %s", job_id)
         except Exception as e:
-            route.error = f"Spansh POST failed: {e}"
+            route.error = t("trade.spansh_post_failed", error=e)
             logger.error("Spansh POST error: %s", e)
             self._last_result = route
             return route
@@ -1163,7 +1163,7 @@ class TradeEngine:
         while True:
             elapsed = time.time() - start
             if elapsed > max_wait:
-                route.error = "Spansh polling timeout"
+                route.error = t("trade.spansh_timeout")
                 logger.error("Spansh polling timeout after %ds", max_wait)
                 break
 
@@ -1189,7 +1189,7 @@ class TradeEngine:
                         # Feature B: sprawdź scoopable asynchronicznie
                         self._check_scoopable(route)
                     else:
-                        route.error = f"Spansh error: {status}"
+                        route.error = t("trade.spansh_error", status=status)
                     break
             except Exception as e:
                 logger.warning("Spansh poll error: %s", e)
@@ -1251,12 +1251,12 @@ class TradeEngine:
             job_data = resp.json()
             job_id = job_data.get("job")
             if not job_id:
-                plan.error = f"Brak job_id w odpowiedzi: {job_data}"
+                plan.error = t("trade.no_job_id", data=job_data)
                 logger.error("Spansh route no job_id: %s", job_data)
                 return plan
             logger.info("Spansh route job queued: %s", job_id)
         except Exception as e:
-            plan.error = f"Spansh POST failed: {e}"
+            plan.error = t("trade.spansh_post_failed", error=e)
             logger.error("Spansh route POST error: %s", e)
             return plan
 
@@ -1267,7 +1267,7 @@ class TradeEngine:
         while True:
             elapsed = time.time() - start
             if elapsed > max_wait:
-                plan.error = "Spansh polling timeout"
+                plan.error = t("trade.spansh_timeout")
                 logger.error("Spansh route polling timeout after %ds", max_wait)
                 break
 
@@ -1287,7 +1287,7 @@ class TradeEngine:
                     if status == "ok":
                         plan = self._parse_route_result(data, start_system, end_system)
                     else:
-                        plan.error = f"Spansh error: {status}"
+                        plan.error = t("trade.spansh_error", status=status)
                     break
             except Exception as e:
                 logger.warning("Spansh route poll error: %s", e)

@@ -5,6 +5,7 @@ Klucz game_window_class = klasa okna gry (kdotool), domyślnie appid Elite Dange
 Klucz bar_only_when_game_focused = czy pasek ma być widoczny tylko, gdy okno gry ma fokus (domyślnie False, włączyć dopiero po zweryfikowaniu game_window_class).
 Klucze pad_filter (auto/large/all) / max_star_distance_ls (0 = bez limitu) / market_type (all/space/planetary) = filtry rynków (jak "Market minimum pad size" w TCE).
 Klucze bar_alpha / bar_font_scale / panel_font_scale = wygląd (CONTROL jak w TCE): przezroczystość paska i skale czcionek.
+Klucz language (pl/en) = język interfejsu (teksty w i18n.py), działa po restarcie.
 """
 
 import json
@@ -29,6 +30,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     'pad_filter': 'auto',
     'max_star_distance_ls': 5000,
     'market_type': 'all',
+    'language': 'pl',
 }
 
 
