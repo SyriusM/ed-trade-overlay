@@ -8,6 +8,7 @@ top bar spanning the full screen width. Uses Tkinter with overrideredirect,
 import logging
 import threading
 import tkinter as tk
+import tkinter.font as tkfont
 from typing import Optional, Callable
 
 from . import tce_theme as tce
@@ -18,6 +19,8 @@ logger = logging.getLogger(__name__)
 # Górny pasek pełnej szerokości w układzie MAIN UI z TCE: POZYCJA | status trasy | CEL
 WINDOW_HEIGHT = 84
 MARGIN = 8
+# Najmniejszy rozmiar czcionki (ułamek bazowego) przy dopasowywaniu tekstu do szerokości pola
+MIN_FIT_RATIO = 0.7
 
 
 class TradeOverlay:
@@ -27,6 +30,7 @@ class TradeOverlay:
         self.master = master or tk.Tk()
         self.master.withdraw()  # ukryj na czas konfiguracji
 
+        self._fit: dict = {}  # label -> (bazowa czcionka, własna czcionka, pełny tekst)
         self._setup_window()
         self._setup_fonts()
         self._build_ui()
@@ -70,6 +74,8 @@ class TradeOverlay:
         self.master.attributes("-alpha", min(1.0, max(0.2, alpha)))
         self.fonts.set_scale(font_scale)
         self._apply_geometry(font_scale)
+        for label in self._fit:
+            self._refit(label)
 
     def _setup_fonts(self):
         fonts = tce.Fonts(self.master)
@@ -89,6 +95,56 @@ class TradeOverlay:
         box.content.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         return box
 
+    def _fit_label(self, parent: tk.Misc, base: tkfont.Font, **kw) -> tk.Label:
+        """Label, którego tekst zawsze mieści się w szerokości pola: najpierw zmniejsza
+        czcionkę (do MIN_FIT_RATIO bazowej), a jeśli to nie wystarczy — ucina końcówkę z „…”.
+
+        width=1 sprawia, że długi tekst nie rozpycha kolumny siatki — szerokość
+        wyznacza układ, a tekst dopasowuje się do niej.
+        """
+        own = tkfont.Font(parent, **base.actual())
+        label = tk.Label(parent, text="", font=own, width=1, **kw)
+        self._fit[label] = (base, own, "")
+        label.bind("<Configure>", lambda _e: self._refit(label))
+        return label
+
+    def _set_text(self, label: tk.Label, text: str, **kw) -> None:
+        """Ustaw tekst dopasowywanego labela (kw — np. fg — trafia wprost do config)."""
+        base, own, _ = self._fit[label]
+        self._fit[label] = (base, own, text)
+        if kw:
+            label.config(**kw)
+        self._refit(label)
+
+    def _refit(self, label: tk.Label) -> None:
+        base, own, text = self._fit[label]
+        base_size = abs(int(base.cget("size")))
+        pad = 2 * (int(label.cget("padx")) + int(label.cget("bd")) + int(label.cget("highlightthickness")))
+        avail = label.winfo_width() - pad - 2
+        lines = text.split("\n")
+        size = base_size
+        own.configure(size=size)
+        if avail > 10:  # przed pierwszym rozłożeniem szerokość jest nieznana
+            min_size = max(6, round(base_size * MIN_FIT_RATIO))
+            while size > min_size and max(own.measure(line) for line in lines) > avail:
+                size -= 1
+                own.configure(size=size)
+            lines = [self._elide(own, line, avail) for line in lines]
+        label.config(text="\n".join(lines))
+
+    @staticmethod
+    def _elide(font: tkfont.Font, line: str, avail: int) -> str:
+        if font.measure(line) <= avail:
+            return line
+        lo, hi = 0, len(line)
+        while lo < hi:  # najdłuższy prefiks, który z „…” mieści się w avail
+            mid = (lo + hi + 1) // 2
+            if font.measure(line[:mid].rstrip(" ·") + "…") <= avail:
+                lo = mid
+            else:
+                hi = mid - 1
+        return line[:lo].rstrip(" ·") + "…"
+
     def _build_ui(self):
         self.frame = tk.Frame(self.master, bg=tce.BG, highlightthickness=0, bd=0)
         self.frame.pack(fill=tk.BOTH, expand=True)
@@ -102,8 +158,8 @@ class TradeOverlay:
 
         left = self._display(body, "POZYCJA")
         left.grid(row=0, column=0, sticky="nsew", padx=(MARGIN, 6), pady=(4, 4))
-        self.system_info_label = tk.Label(left.content, text="", font=self.font_info, fg=tce.ORANGE,
-                                          bg=tce.ROW_BG, anchor="w", justify=tk.LEFT)
+        self.system_info_label = self._fit_label(left.content, self.font_info, fg=tce.ORANGE,
+                                                 bg=tce.ROW_BG, anchor="w", justify=tk.LEFT)
         self.system_info_label.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
 
         center = tk.Frame(body, bg=tce.BG)
@@ -114,25 +170,25 @@ class TradeOverlay:
         self.status_label = tk.Label(center, text="OCZEKIWANIE NA DOKOWANIE", font=self.font_title,
                                      fg=tce.ORANGE_DIM, bg=tce.BG)
         self.status_label.pack(side=tk.TOP, pady=(2, 0))
-        self.steps_label = tk.Label(center, text="", font=self.font_info, fg=tce.ORANGE, bg=tce.BG)
-        self.steps_label.pack(side=tk.TOP)
+        self.steps_label = self._fit_label(center, self.font_info, fg=tce.ORANGE, bg=tce.BG)
+        self.steps_label.pack(side=tk.TOP, fill=tk.X, padx=4)
 
         right = self._display(body, "CEL")
         right.grid(row=0, column=2, sticky="nsew", padx=(6, MARGIN), pady=(4, 4))
-        self.dest_label = tk.Label(right.content, text="", font=self.font_highlight, fg=tce.TEXT_WHITE,
-                                   bg=tce.ROW_BG, anchor="w")
+        self.dest_label = self._fit_label(right.content, self.font_highlight, fg=tce.TEXT_WHITE,
+                                          bg=tce.ROW_BG, anchor="w")
         self.dest_label.pack(fill=tk.X, padx=8, pady=(3, 0))
-        self.route_label = tk.Label(right.content, text="", font=self.font_info, fg=tce.ORANGE,
-                                    bg=tce.ROW_BG, anchor="w")
+        self.route_label = self._fit_label(right.content, self.font_info, fg=tce.ORANGE,
+                                           bg=tce.ROW_BG, anchor="w")
         self.route_label.pack(fill=tk.X, padx=8, pady=(0, 3))
 
         self._hide_content()
 
     def _hide_content(self):
         """Wyczyść wyświetlacz celu i checklistę."""
-        self.dest_label.config(text="")
-        self.route_label.config(text="", fg=tce.ORANGE)
-        self.steps_label.config(text="")
+        self._set_text(self.dest_label, "")
+        self._set_text(self.route_label, "", fg=tce.ORANGE)
+        self._set_text(self.steps_label, "")
 
     def update_route(self, route: TradeRoute):
         """Aktualizuj overlay z nową trasą — thread-safe (wołane z wątku watchera)."""
@@ -181,7 +237,7 @@ class TradeOverlay:
 
         if route.error:
             self._hide_content()
-            self.route_label.config(text=f"BŁĄD: {route.error}".upper(), fg=tce.RED)
+            self._set_text(self.route_label, f"BŁĄD: {route.error}".upper(), fg=tce.RED)
             self.status_label.config(text="BŁĄD TRASY", fg=tce.RED)
             return
 
@@ -232,13 +288,13 @@ class TradeOverlay:
             if other_items:
                 extras.append(f"[MASZ: {', '.join(other_items)}]")
 
-        self.dest_label.config(text=f"{display_dest_system} · {display_dest_station}".upper())
+        self._set_text(self.dest_label, f"{display_dest_system} · {display_dest_station}".upper())
         route_text = (f"{display_item} ×{display_qty}  {display_buy:,} → {display_sell:,} CR"
                       f"  ·  ZYSK {route.total_profit:,} CR")
         if extras:
             route_text += "  ·  " + "  ".join(extras)
-        self.route_label.config(text=route_text.upper(), fg=tce.GREEN if route.total_profit > 0 else tce.RED)
-        self.steps_label.config(text="  ".join(t for t in (hop_info, steps.upper()) if t))
+        self._set_text(self.route_label, route_text.upper(), fg=tce.GREEN if route.total_profit > 0 else tce.RED)
+        self._set_text(self.steps_label, "  ".join(t for t in (hop_info, steps.upper()) if t))
         finished = "ukończona" in steps
         self.status_label.config(text="TRASA UKOŃCZONA" if finished else "TRASA AKTYWNA", fg=tce.GREEN)
 
@@ -266,7 +322,7 @@ class TradeOverlay:
         """Wywoływane z mainloop — aktualizuje system_info_text i rejestruje stronę 'system'."""
         self._system_info_text = text
         self.register_page('system', lambda: self._system_info_text)
-        self.system_info_label.config(text=text.upper())
+        self._set_text(self.system_info_label, text.upper())
 
     def register_page(self, name: str, getter) -> None:
         """Zarejestruj/zaktualizuj stronę rotacji paska (name unikalny, getter: () -> str)."""
@@ -282,7 +338,7 @@ class TradeOverlay:
             self._page_index = (self._page_index + 1) % len(self._pages)
             name, getter = self._pages[self._page_index]
             try:
-                self.system_info_label.config(text=getter().upper())
+                self._set_text(self.system_info_label, getter().upper())
             except Exception:
                 logger.exception('Błąd rotacji strony %s', name)
         self.master.after(8000, self._rotate_pages)
