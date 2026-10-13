@@ -328,7 +328,11 @@ class TradeOverlay:
 
     def _set_polling_status_inner(self, elapsed: int) -> None:
         """Wywoływane z mainloop — aktualizuje status bez zmiany current_route."""
-        self._set_fit(self.status_label, f"LICZĘ TRASĘ… {elapsed}s", fg=tce.ORANGE)
+        if getattr(self.current_route, '_quick', False):
+            # Szybka trasa z rynku stacji już jest na pasku — Spansh liczy pełną (wieloetapową)
+            self._set_fit(self.status_label, f"SZYBKA TRASA · PEŁNA ZA CHWILĘ… {elapsed}s", fg=tce.GREEN)
+        else:
+            self._set_fit(self.status_label, f"LICZĘ TRASĘ… {elapsed}s", fg=tce.ORANGE)
 
     def set_system_info(self, text: str) -> None:
         """Ustaw info o systemie/stacjach — thread-safe. Rejestruje też jako strona rotacji."""

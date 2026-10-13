@@ -58,3 +58,9 @@ def test_copy_text_modes():
     assert copy_text("HIP 12345", "Ackerman Market", "system") == "HIP 12345"
     assert copy_text("HIP 12345", "Ackerman Market", "both") == "Ackerman Market (HIP 12345)"
     assert copy_text("HIP 12345", "", "station") == "HIP 12345"
+
+
+def test_stations_word():
+    from edtrade.main import stations_word
+    assert [stations_word(n) for n in (1, 2, 5, 12, 22, 62)] == [
+        "1 stacja", "2 stacje", "5 stacji", "12 stacji", "22 stacje", "62 stacje"]

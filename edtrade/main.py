@@ -17,11 +17,12 @@ from .watcher import JournalWatcher
 from .filters import filter_from_config
 from .trade import market_from_market_json, nearby_candidates_from_market, rank_trades, Hop, TradeRoute
 from .trade import (TradeEngine, ship_needs_large_pad, get_system_info, search_stations, find_material_traders,
+                    get_station_market,
                     find_mining_hotspots, find_mineral_buyers)
 from .overlay import TradeOverlay, compact_cr
 from .session import SessionLedger
 from . import assess, verify
-from datetime import datetime
+from datetime import datetime, timezone
 import threading
 from .panel import TradePanel
 from .window_watch import get_active_window
@@ -110,6 +111,24 @@ def parse_args():
     return parser.parse_args()
 
 
+def _epoch(updated_at) -> float:
+    """ISO z Ardent / Market.json → epoch s (0 = nieznane)."""
+    try:
+        ts = datetime.fromisoformat(str(updated_at).replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    return (ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)).timestamp()
+
+
+def stations_word(n: int) -> str:
+    """Polska odmiana: 1 stacja, 2–4 stacje, 5+ stacji (12–14 stacji)."""
+    if n == 1:
+        return "1 stacja"
+    if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
+        return f"{n} stacje"
+    return f"{n} stacji"
+
+
 def copy_text(system: str, station: str, mode: str) -> str:
     """Tekst do schowka: 'station' → stacja, 'system' → system, 'both' → "Stacja (System)". Bez stacji → system."""
     if not station or mode == 'system':
@@ -173,6 +192,9 @@ class EDTradeOverlayApp:
         self.session = SessionLedger()
         self._copied_system = ""
         self._live_market = None
+        self._dock_generation = 0
+        self._full_route_generation = 0
+        self._quick_route_of = None  # (generation, TradeRoute) — szybka trasa z ostatniego dokowania
 
         # Podłącz callback pollingu do overlaya
         if self.overlay:
@@ -374,15 +396,7 @@ class EDTradeOverlayApp:
             except Exception:
                 logger.exception("Błąd przekazania stacji do panelu")
 
-        # Dokowanie w celu bieżącego hopu = gracz realizuje plan — nie nadpisujemy trasy
-        route = None
-        if following:
-            logger.info("Docked w celu hopu %d — trasa w toku, bez przeliczania", self.checklist.hop_index + 1)
-        else:
-            self._apply_market_filter()
-            route = self.trade_engine.calculate_route_via_spansh(system, station)
-
-        # Pobierz info o systemie i stacjach
+        # Pobierz info o systemie i stacjach — przed liczeniem trasy (Spansh trwa do kilku minut)
         try:
             system_id64 = str(event.get('SystemAddress', ''))
             info_parts = []
@@ -392,11 +406,33 @@ class EDTradeOverlayApp:
                     info_parts.append(f'{sys_info.allegiance} | sec:{sys_info.security}')
             stations = search_stations(system)
             if stations:
-                info_parts.append(f'{len(stations)} stacji')
+                info_parts.append(stations_word(len(stations)))
             if self.overlay:
                 self.overlay.set_system_info(f'{system} · {station}\n' + ' | '.join(info_parts))
         except Exception:
             logger.exception('Błąd automatu stacje/system przy Docked')
+
+
+        # Dokowanie w celu bieżącego hopu = gracz realizuje plan — nie nadpisujemy trasy
+        route = None
+        if following:
+            logger.info("Docked w celu hopu %d — trasa w toku, bez przeliczania", self.checklist.hop_index + 1)
+        else:
+            self._apply_market_filter()
+            self._dock_generation += 1
+            generation = self._dock_generation
+            threading.Thread(target=self._quick_route, args=(system, station, generation), daemon=True).start()
+            route = self.trade_engine.calculate_route_via_spansh(system, station)
+            self._full_route_generation = generation
+            quick = self._quick_route_of[1] if self._quick_route_of and self._quick_route_of[0] == generation else None
+            if quick is not None and (route.error or (self.checklist is not None and self.checklist.route is quick
+                                                      and self.checklist.bought > 0)):
+                # Spansh nie dał trasy albo gracz już kupuje wg szybkiej — zostaje szybka
+                logger.info("Zostaje szybka trasa (%s)", route.error or "zakup w toku")
+                quick._quick = False  # pełnej nie będzie — pasek przestaje czekać
+                if self.overlay:
+                    self.overlay._refresh_now()
+                route = None
 
         # Automat journey (pkt 3) — tylko jeśli skonfigurowany cel
         try:
@@ -512,39 +548,62 @@ class EDTradeOverlayApp:
         if check.level == verify.GONE:
             threading.Thread(target=self._replan_from_live, args=(live, check), daemon=True).start()
 
+    def _best_single_route(self, market) -> Optional[TradeRoute]:
+        """Najlepszy pojedynczy kurs (cr/h, wg filtrów) z rynku stacji → trasa 1-hop z checklistą.
+
+        Szybkie (jedno zapytanie Ardent na towar, równolegle) — nie czeka na Spansh (40–180 s).
+        """
+        capacity = int(self._last_capacity or self.trade_engine.capacity or 0)
+        cands = nearby_candidates_from_market(market, capacity, self._apply_market_filter(),
+                                              jump_range=float(self.trade_engine.ly_per or 30.0))
+        best = rank_trades(cands, "per_hour")
+        if not best:
+            return None
+        if not self._commodity_names:
+            self._commodity_names = load_commodity_names()
+        t = best[0]
+        name = self._commodity_names.get(t.commodity.lower(), t.commodity)
+        hop = Hop(market.system_name, market.station_name, t.sell_system, t.sell_station, name, t.units, t.buy_price,
+                  t.sell_price, t.total_profit, t.distance, _epoch(market.updated_at), _epoch(t.updated_at))
+        return TradeRoute(source_system=market.system_name, source_station=market.station_name,
+                          destination_system=t.sell_system, destination_station=t.sell_station, buy_item=name,
+                          buy_quantity=t.units, buy_price=t.buy_price, sell_price=t.sell_price,
+                          profit_per_unit=t.profit_per_unit, total_profit=t.total_profit, cargo_used=t.units,
+                          hops=1, hops_list=[hop])
+
     def _replan_from_live(self, live, check) -> None:
-        """Nowa trasa 1-hop z rynku na żywo: najlepszy cr/h wg filtrów (zamiast nieaktualnego hopu)."""
+        """Towaru z trasy już nie ma → nowa trasa 1-hop z rynku na żywo (Spansh ma te same stare dane)."""
         try:
-            capacity = int(self._last_capacity or self.trade_engine.capacity or 0)
-            cands = nearby_candidates_from_market(live, capacity, self._apply_market_filter(),
-                                                  jump_range=float(self.trade_engine.ly_per or 30.0))
-            best = rank_trades(cands, "per_hour")
+            route = self._best_single_route(live)
         except Exception:
             logger.exception("Nowa trasa z rynku na żywo")
             return
-        if not best:
+        if route is None:
             logger.info("Brak alternatywy z rynku na żywo — zostaje komunikat: %s", check.text)
             return
-        t = best[0]
-        name = self._commodity_names.get(t.commodity.lower(), t.commodity)
-        dst_epoch = 0.0
-        try:
-            dst_epoch = datetime.fromisoformat(t.updated_at.replace("Z", "+00:00")).timestamp()
-        except (ValueError, AttributeError):
-            pass
-        hop = Hop(live.system_name, live.station_name, t.sell_system, t.sell_station, name, t.units, t.buy_price,
-                  t.sell_price, t.total_profit, t.distance, time.time(), dst_epoch)
-        route = TradeRoute(source_system=live.system_name, source_station=live.station_name,
-                           destination_system=t.sell_system, destination_station=t.sell_station, buy_item=name,
-                           buy_quantity=t.units, buy_price=t.buy_price, sell_price=t.sell_price,
-                           profit_per_unit=t.profit_per_unit, total_profit=t.total_profit, cargo_used=t.units,
-                           hops=1, hops_list=[hop])
-        logger.info("Nowa trasa z rynku na żywo: %s %s → %s/%s (%s cr)", name, t.units, t.sell_system,
-                    t.sell_station, f"{t.total_profit:,}")
+        logger.info("Nowa trasa z rynku na żywo: %s", route.summary())
         self._publish_route(route, live.system_name, live.station_name)
-        route._live_check = verify.LiveCheck(verify.OK, f"↻ ZAMIAST: {name.upper()} (CENY NA ŻYWO)", verify.BUY, 0)
+        route._live_check = verify.LiveCheck(verify.OK, f"↻ ZAMIAST: {route.buy_item.upper()} (CENY NA ŻYWO)",
+                                             verify.BUY, 0)
         if self.overlay:
             self.overlay._refresh_now()
+
+    def _quick_route(self, system: str, station: str, generation: int) -> None:
+        """Od razu po dokowaniu: najlepszy pojedynczy kurs, zanim Spansh policzy pełną trasę."""
+        try:
+            market = self._live_market if self._live_market is not None and (
+                self._live_market.system_name.lower(), self._live_market.station_name.lower()) == (
+                system.lower(), station.lower()) else get_station_market(system, station)
+            route = None if market.error else self._best_single_route(market)
+        except Exception:
+            logger.exception("Szybka trasa po dokowaniu")
+            return
+        if route is None or generation != self._dock_generation or self._full_route_generation == generation:
+            return  # w międzyczasie nowe dokowanie albo Spansh już skończył
+        route._quick = True
+        self._quick_route_of = (generation, route)
+        logger.info("Szybka trasa (czekam na Spansh): %s", route.summary())
+        self._publish_route(route, system, station)
 
     def _on_materials(self, event: dict):
         """Reaguje na event Materials (start gry) — stan materiałów do zakładki Inżynieria."""
