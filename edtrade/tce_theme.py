@@ -9,6 +9,9 @@ from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Callable, Optional, Sequence
 
+from .i18n import t
+
+
 BG = "#000000"
 ORANGE = "#ff8000"
 ORANGE_DIM = "#7a3d00"
@@ -130,9 +133,9 @@ class TitleBar(tk.Frame):
     def __init__(self, parent: tk.Misc, title: str, fonts: Fonts,
                  on_control: Optional[Callable[[], None]] = None, on_hide: Optional[Callable[[], None]] = None):
         super().__init__(parent, bg=BG, highlightthickness=0)
-        self.control = _tab(self, "CONTROL", fonts, command=on_control)
+        self.control = _tab(self, t("tce.control"), fonts, command=on_control)
         self.control.pack(side=tk.LEFT)
-        self.hide = _tab(self, "HIDE", fonts, command=on_hide)
+        self.hide = _tab(self, t("tce.hide"), fonts, command=on_hide)
         self.hide.pack(side=tk.RIGHT)
         self.title = _tab(self, title, fonts)
         self.title.configure(padx=40)

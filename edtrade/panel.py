@@ -15,15 +15,23 @@ from . import materials as mats
 from . import tce_theme as tce
 from .checklist import load_commodity_names
 from .filters import filter_from_config
+from .i18n import LANGUAGES, plural, set_language, t
 from datetime import datetime, timezone
 from .trade import (get_system_info, search_stations, find_material_traders, find_mining_hotspots, find_mineral_buyers,
                     find_commodity_sellers, get_station_market, StationMarket, JourneyPlan, TradeEngine,
                     nearby_candidates_from_market, cargo_candidates, rank_trades, RANK_MODES)
 
-COMMODITY_MODES = ('Kup', 'Sprzedaj')
-PAD_FILTER_LABELS = {'auto': 'Automatycznie (ze statku)', 'large': 'Tylko pad L', 'all': 'Wszystkie pady'}
-MARKET_TYPE_LABELS = {'all': 'Wszystkie', 'space': 'Tylko kosmiczne', 'planetary': 'Tylko planetarne'}
-PANEL_TITLE = 'ED Trade Panel'
+COMMODITY_MODES = ('buy', 'sell')
+PAD_FILTER_KEYS = ('auto', 'large', 'all')
+MARKET_TYPE_KEYS = ('all', 'space', 'planetary')
+
+
+def pad_filter_labels() -> dict[str, str]:
+    return {k: t(f'settings.pad.{k}') for k in PAD_FILTER_KEYS}
+
+
+def market_type_labels() -> dict[str, str]:
+    return {k: t(f'settings.market.{k}') for k in MARKET_TYPE_KEYS}
 
 
 def _data_age(updated_at: str, now: Optional[datetime] = None) -> str:
@@ -47,17 +55,16 @@ def _vs_mean(price: int, mean: int) -> str:
     return f'{(price - mean) / mean * 100:+.0f}%' if mean else '?'
 
 
-MATERIAL_HINTS = {
-    'Raw': 'trader Raw / planety (zakładka Materiały)',
-    'Manufactured': 'trader Manufactured / sygnały, wraki',
-    'Encoded': 'trader Encoded / skanowanie',
-}
+MATERIAL_TYPES = ('Raw', 'Manufactured', 'Encoded')
 
 
-def _hops_word(n: int) -> str:
-    if n == 1:
-        return 'hop'
-    return 'hopy' if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else 'hopów'
+def _material_hint(material_type: str) -> str:
+    return t(f'eng.hint.{material_type.lower()}') if material_type in MATERIAL_TYPES else '?'
+
+
+def _count(n: int, word_key: str) -> dict:
+    """Wartości {n} i {word} do tekstów z liczebnikiem, np. t('system.count', **_count(5, 'n.stations'))."""
+    return {'n': n, 'word': plural(n, word_key)}
 
 
 class TradePanel:
@@ -68,9 +75,10 @@ class TradePanel:
         self.master = master
         self.config_path = config_path
         self.user_config = user_config if user_config is not None else load_user_config(config_path)
+        set_language(str(self.user_config.get('language', 'pl')))
         self.trade_engine = TradeEngine()
         self.window = tk.Toplevel(master)
-        self.window.title(PANEL_TITLE)
+        self.window.title(t('panel.title'))
         self.window.geometry('1100x700')
         self.window.configure(bg=tce.BG)
         # X minimalizuje okno zamiast je niszczyć — panel wraca z paska zadań / Alt-Tab
@@ -79,7 +87,7 @@ class TradePanel:
         self.fonts = tce.Fonts(self.window, scale=float(self.user_config.get('panel_font_scale', 1.0)))
         tce.apply_ttk_theme(self.window, self.fonts)
 
-        self.title_bar = tce.TitleBar(self.window, 'Trasa', self.fonts,
+        self.title_bar = tce.TitleBar(self.window, t('panel.tab.route'), self.fonts,
                                       on_control=self._open_settings, on_hide=self.window.iconify)
         self.title_bar.pack(fill=tk.X)
         self._context_lock = threading.Lock()
@@ -92,19 +100,19 @@ class TradePanel:
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=(4, 8))
 
         self.tab_route = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_route, text='Trasa')
+        self.notebook.add(self.tab_route, text=t('panel.tab.route'))
         self._route_lock = threading.Lock()
         self._route = None
-        self.route_header = tce.SectionHeader(self.tab_route, 'Trasa handlowa', self.fonts)
+        self.route_header = tce.SectionHeader(self.tab_route, t('route.header'), self.fonts)
         self.route_header.pack(fill=tk.X, padx=10, pady=(10, 2))
-        self.route_status = tk.Label(self.tab_route, text='OCZEKIWANIE NA DOKOWANIE — TRASA LICZY SIĘ PO DOKOWANIU',
+        self.route_status = tk.Label(self.tab_route, text=t('route.waiting'),
                                      bg=tce.BG, fg=tce.ORANGE_DIM, font=self.fonts.title, anchor='w')
         self.route_status.pack(fill=tk.X, padx=10, pady=(4, 6))
         self.route_cards = tk.Frame(self.tab_route, bg=tce.BG)
         self.route_cards.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
 
         self.tab_nearby = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_nearby, text='Okolica')
+        self.notebook.add(self.tab_nearby, text=t('panel.tab.nearby'))
         self.nearby_system_var = tk.StringVar(value='Sol')
         self.nearby_station_var = tk.StringVar(value='Columbus')
         self.nearby_range_var = tk.StringVar(value='40')
@@ -116,194 +124,206 @@ class TradePanel:
         self.nearby_mode_var = tk.StringVar(value='per_hour')
         nearby_entry = ttk.Frame(self.tab_nearby)
         nearby_entry.pack(fill=tk.X, padx=10, pady=(10, 4))
-        for label, var, width in (('System:', self.nearby_system_var, 18), ('Stacja:', self.nearby_station_var, 22),
-                                  ('Zasięg (ly):', self.nearby_range_var, 6)):
+        for label, var, width in ((t('lbl.system'), self.nearby_system_var, 18),
+                                  (t('lbl.station'), self.nearby_station_var, 22),
+                                  (t('lbl.range_ly'), self.nearby_range_var, 6)):
             ttk.Label(nearby_entry, text=label).pack(side=tk.LEFT)
             ttk.Entry(nearby_entry, textvariable=var, width=width).pack(side=tk.LEFT, padx=(4, 10))
-        self.nearby_btn = ttk.Button(nearby_entry, text='Szukaj', command=self.refresh_nearby_tab)
+        self.nearby_btn = ttk.Button(nearby_entry, text=t('btn.search'), command=self.refresh_nearby_tab)
         self.nearby_btn.pack(side=tk.LEFT)
-        self.nearby_modes = tce.SegmentedButtons(self.tab_nearby, list(RANK_MODES.items()), self.fonts,
+        self.nearby_modes = tce.SegmentedButtons(self.tab_nearby, [(m, t(f'rank.{m}')) for m in RANK_MODES], self.fonts,
                                                  command=lambda _m: self._render_nearby(), variable=self.nearby_mode_var)
         self.nearby_modes.pack(fill=tk.X, padx=10, pady=(4, 2))
-        self.nearby_header = tce.SectionHeader(self.tab_nearby, 'Kup tutaj → sprzedaj w okolicy', self.fonts)
+        self.nearby_header = tce.SectionHeader(self.tab_nearby, t('nearby.header'), self.fonts)
         self.nearby_header.pack(fill=tk.X, padx=10, pady=(6, 2))
-        trade_columns = [('commodity', 'Towar', 160, 'w'), ('buy', 'Kup', 70, 'e'), ('station', 'Sprzedaj w', 170, 'w'),
-                         ('system', 'System', 140, 'w'), ('sell', 'Cena', 70, 'e'), ('per_t', 'Zysk/t', 70, 'e'),
-                         ('total', 'Zysk', 100, 'e'), ('time', 'Czas', 60, 'e'), ('per_h', 'CR/H', 100, 'e'),
-                         ('distance', 'Odl.', 60, 'e'), ('arrival', 'LS', 60, 'e'), ('pad', 'Pad', 40, 'center'),
-                         ('age', 'Dane', 55, 'e')]
+        trade_columns = [('commodity', t('col.commodity'), 160, 'w'), ('buy', t('col.buy'), 70, 'e'),
+                         ('station', t('col.sell_at'), 170, 'w'), ('system', t('col.system'), 140, 'w'),
+                         ('sell', t('col.price'), 70, 'e'), ('per_t', t('col.profit_t'), 70, 'e'),
+                         ('total', t('col.profit'), 100, 'e'), ('time', t('col.time'), 60, 'e'),
+                         ('per_h', t('col.cr_h'), 100, 'e'), ('distance', t('col.dist_short'), 60, 'e'),
+                         ('arrival', t('col.ls'), 60, 'e'), ('pad', t('col.pad'), 40, 'center'),
+                         ('age', t('col.age'), 55, 'e')]
         self.nearby_table = tce.DataTable(self.tab_nearby, trade_columns, height=9)
         self.nearby_table.pack(fill=tk.BOTH, expand=True, padx=10, pady=(2, 6))
-        self.nearby_cargo_header = tce.SectionHeader(self.tab_nearby, 'Twój ładunek — gdzie sprzedać', self.fonts)
+        self.nearby_cargo_header = tce.SectionHeader(self.tab_nearby, t('nearby.cargo_header'), self.fonts)
         self.nearby_cargo_header.pack(fill=tk.X, padx=10, pady=(4, 2))
         self.nearby_cargo_table = tce.DataTable(self.tab_nearby, [
-            ('commodity', 'Towar', 160, 'w'), ('units', 'Ilość', 60, 'e'), ('station', 'Sprzedaj w', 170, 'w'),
-            ('system', 'System', 140, 'w'), ('sell', 'Cena', 70, 'e'), ('total', 'Razem', 100, 'e'),
-            ('time', 'Czas', 60, 'e'), ('per_h', 'CR/H', 100, 'e'), ('distance', 'Odl.', 60, 'e'),
-            ('arrival', 'LS', 60, 'e'), ('pad', 'Pad', 40, 'center'), ('age', 'Dane', 55, 'e')], height=4)
+            ('commodity', t('col.commodity'), 160, 'w'), ('units', t('col.units'), 60, 'e'),
+            ('station', t('col.sell_at'), 170, 'w'), ('system', t('col.system'), 140, 'w'),
+            ('sell', t('col.price'), 70, 'e'), ('total', t('col.total'), 100, 'e'), ('time', t('col.time'), 60, 'e'),
+            ('per_h', t('col.cr_h'), 100, 'e'), ('distance', t('col.dist_short'), 60, 'e'),
+            ('arrival', t('col.ls'), 60, 'e'), ('pad', t('col.pad'), 40, 'center'), ('age', t('col.age'), 55, 'e')],
+            height=4)
         self.nearby_cargo_table.pack(fill=tk.X, padx=10, pady=(2, 10))
 
         self.tab_system = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_system, text='System')
+        self.notebook.add(self.tab_system, text=t('panel.tab.system'))
 
         self.system_entry_var = tk.StringVar(value='Sol')
         self.system_entry_frame = ttk.Frame(self.tab_system)
         self.system_entry_frame.pack(fill=tk.X, padx=10, pady=(10, 4))
-        ttk.Label(self.system_entry_frame, text='System:').pack(side=tk.LEFT)
+        ttk.Label(self.system_entry_frame, text=t('lbl.system')).pack(side=tk.LEFT)
         self.system_entry = ttk.Entry(self.system_entry_frame, textvariable=self.system_entry_var, width=30)
         self.system_entry.pack(side=tk.LEFT, padx=(4, 4))
-        self.system_refresh_btn = ttk.Button(self.system_entry_frame, text='Odśwież', command=self.refresh_system_tab)
+        self.system_refresh_btn = ttk.Button(self.system_entry_frame, text=t('btn.refresh'),
+                                             command=self.refresh_system_tab)
         self.system_refresh_btn.pack(side=tk.LEFT)
 
-        self.system_header = tce.SectionHeader(self.tab_system, 'Stacje w systemie', self.fonts)
+        self.system_header = tce.SectionHeader(self.tab_system, t('system.header'), self.fonts)
         self.system_header.pack(fill=tk.X, padx=10, pady=(8, 2))
         self.system_table = tce.DataTable(self.tab_system, [
-            ('name', 'Stacja', 260, 'w'), ('type', 'Typ', 170, 'w'), ('pad', 'Pad', 80, 'center'),
-            ('arrival', 'Od gwiazdy', 110, 'e'), ('economy', 'Ekonomia', 150, 'w'), ('allegiance', 'Frakcja', 130, 'w')],
+            ('name', t('col.station'), 260, 'w'), ('type', t('col.type'), 170, 'w'), ('pad', t('col.pad'), 80, 'center'),
+            ('arrival', t('col.from_star'), 110, 'e'), ('economy', t('system.col.economy'), 150, 'w'),
+            ('allegiance', t('system.col.allegiance'), 130, 'w')],
             height=18)
         self.system_table.pack(fill=tk.BOTH, expand=True, padx=10, pady=(2, 10))
 
         self.tab_materials = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_materials, text='Materiały')
+        self.notebook.add(self.tab_materials, text=t('panel.tab.materials'))
 
         self.materials_kind_var = tk.StringVar(value='Manufactured')
         self.materials_system_var = tk.StringVar(value='Sol')
         self.materials_entry_frame = ttk.Frame(self.tab_materials)
         self.materials_entry_frame.pack(fill=tk.X, padx=10, pady=(10, 4))
-        ttk.Label(self.materials_entry_frame, text='System:').pack(side=tk.LEFT)
+        ttk.Label(self.materials_entry_frame, text=t('lbl.system')).pack(side=tk.LEFT)
         ttk.Entry(self.materials_entry_frame, textvariable=self.materials_system_var, width=20).pack(side=tk.LEFT, padx=(4, 10))
-        ttk.Label(self.materials_entry_frame, text='Rodzaj:').pack(side=tk.LEFT)
+        ttk.Label(self.materials_entry_frame, text=t('materials.kind')).pack(side=tk.LEFT)
         ttk.Combobox(self.materials_entry_frame, textvariable=self.materials_kind_var, values=['Raw', 'Encoded', 'Manufactured'], width=15, state='readonly').pack(side=tk.LEFT, padx=(4, 10))
-        self.materials_btn = ttk.Button(self.materials_entry_frame, text='Odśwież', command=self.refresh_materials_tab)
+        self.materials_btn = ttk.Button(self.materials_entry_frame, text=t('btn.refresh'), command=self.refresh_materials_tab)
         self.materials_btn.pack(side=tk.LEFT)
 
-        self.materials_header = tce.SectionHeader(self.tab_materials, 'Handlarze materiałów', self.fonts)
+        self.materials_header = tce.SectionHeader(self.tab_materials, t('materials.header'), self.fonts)
         self.materials_header.pack(fill=tk.X, padx=10, pady=(8, 2))
         self.materials_table = tce.DataTable(self.tab_materials, [
-            ('name', 'Stacja', 240, 'w'), ('system', 'System', 200, 'w'), ('trader', 'Trader', 140, 'w'),
-            ('distance', 'Dystans', 100, 'e'), ('arrival', 'Od gwiazdy', 110, 'e'), ('pad', 'Pad', 70, 'center')],
+            ('name', t('col.station'), 240, 'w'), ('system', t('col.system'), 200, 'w'),
+            ('trader', t('materials.col.trader'), 140, 'w'), ('distance', t('col.distance'), 100, 'e'),
+            ('arrival', t('col.from_star'), 110, 'e'), ('pad', t('col.pad'), 70, 'center')],
             height=18)
         self.materials_table.pack(fill=tk.BOTH, expand=True, padx=10, pady=(2, 10))
 
         self.tab_mining = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_mining, text='Mining')
+        self.notebook.add(self.tab_mining, text=t('panel.tab.mining'))
 
         self.mining_tab_mineral_var = tk.StringVar(value='Platinum')
         self.mining_system_var = tk.StringVar(value='Sol')
         self.mining_entry_frame = ttk.Frame(self.tab_mining)
         self.mining_entry_frame.pack(fill=tk.X, padx=10, pady=(10, 4))
-        ttk.Label(self.mining_entry_frame, text='System:').pack(side=tk.LEFT)
+        ttk.Label(self.mining_entry_frame, text=t('lbl.system')).pack(side=tk.LEFT)
         ttk.Entry(self.mining_entry_frame, textvariable=self.mining_system_var, width=20).pack(side=tk.LEFT, padx=(4, 10))
-        ttk.Label(self.mining_entry_frame, text='Minerał:').pack(side=tk.LEFT)
+        ttk.Label(self.mining_entry_frame, text=t('mining.mineral')).pack(side=tk.LEFT)
         ttk.Entry(self.mining_entry_frame, textvariable=self.mining_tab_mineral_var, width=20).pack(side=tk.LEFT, padx=(4, 10))
-        self.mining_btn = ttk.Button(self.mining_entry_frame, text='Odśwież', command=self.refresh_mining_tab)
+        self.mining_btn = ttk.Button(self.mining_entry_frame, text=t('btn.refresh'), command=self.refresh_mining_tab)
         self.mining_btn.pack(side=tk.LEFT)
 
-        self.mining_header = tce.SectionHeader(self.tab_mining, 'Mining', self.fonts)
+        self.mining_header = tce.SectionHeader(self.tab_mining, t('mining.header'), self.fonts)
         self.mining_header.pack(fill=tk.X, padx=10, pady=(8, 4))
         self.mining_tables = tk.Frame(self.tab_mining, bg=tce.BG)
         self.mining_tables.pack(fill=tk.BOTH, expand=True, padx=10, pady=(2, 10))
         self.mining_tables.columnconfigure((0, 1), weight=1, uniform='mn')
         self.mining_tables.rowconfigure(1, weight=1)
-        self.mining_hotspots_header = tce.SectionHeader(self.mining_tables, 'Hotspoty (gdzie kopać)', self.fonts)
+        self.mining_hotspots_header = tce.SectionHeader(self.mining_tables, t('mining.hotspots'), self.fonts)
         self.mining_hotspots_header.grid(row=0, column=0, sticky='ew', padx=(0, 6))
-        self.mining_buyers_header = tce.SectionHeader(self.mining_tables, 'Kupcy (gdzie sprzedać)', self.fonts)
+        self.mining_buyers_header = tce.SectionHeader(self.mining_tables, t('mining.buyers'), self.fonts)
         self.mining_buyers_header.grid(row=0, column=1, sticky='ew', padx=(6, 0))
         self.mining_hotspots_table = tce.DataTable(self.mining_tables, [
-            ('body', 'Pierścień', 220, 'w'), ('type', 'Typ', 90, 'w'), ('count', 'Ile', 60, 'e'),
-            ('distance', 'Odl.', 80, 'e'), ('arrival', 'LS', 70, 'e')], height=16)
+            ('body', t('mining.col.ring'), 220, 'w'), ('type', t('col.type'), 90, 'w'),
+            ('count', t('mining.col.count'), 60, 'e'), ('distance', t('col.dist_short'), 80, 'e'),
+            ('arrival', t('col.ls'), 70, 'e')], height=16)
         self.mining_hotspots_table.grid(row=1, column=0, sticky='nsew', padx=(0, 6), pady=(4, 0))
         self.mining_buyers_table = tce.DataTable(self.mining_tables, [
-            ('station', 'Stacja', 170, 'w'), ('price', 'Cena', 90, 'e'), ('demand', 'Popyt', 80, 'e'),
-            ('distance', 'Odl.', 80, 'e'), ('pad', 'Pad', 60, 'center'), ('age', 'Dane', 50, 'e')], height=16)
+            ('station', t('col.station'), 170, 'w'), ('price', t('col.price'), 90, 'e'),
+            ('demand', t('col.demand'), 80, 'e'), ('distance', t('col.dist_short'), 80, 'e'),
+            ('pad', t('col.pad'), 60, 'center'), ('age', t('col.age'), 50, 'e')], height=16)
         self.mining_buyers_table.grid(row=1, column=1, sticky='nsew', padx=(6, 0), pady=(4, 0))
 
         self.tab_commodity = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_commodity, text='Towary')
+        self.notebook.add(self.tab_commodity, text=t('panel.tab.commodity'))
 
         self.commodity_system_var = tk.StringVar(value='Sol')
         self.commodity_name_var = tk.StringVar(value='Gold')
         self.commodity_mode_var = tk.StringVar(value=COMMODITY_MODES[0])
         self.commodity_entry_frame = ttk.Frame(self.tab_commodity)
         self.commodity_entry_frame.pack(fill=tk.X, padx=10, pady=(10, 4))
-        ttk.Label(self.commodity_entry_frame, text='System:').pack(side=tk.LEFT)
+        ttk.Label(self.commodity_entry_frame, text=t('lbl.system')).pack(side=tk.LEFT)
         ttk.Entry(self.commodity_entry_frame, textvariable=self.commodity_system_var, width=18).pack(side=tk.LEFT, padx=(4, 10))
-        ttk.Label(self.commodity_entry_frame, text='Towar:').pack(side=tk.LEFT)
+        ttk.Label(self.commodity_entry_frame, text=t('commodity.name')).pack(side=tk.LEFT)
         ttk.Entry(self.commodity_entry_frame, textvariable=self.commodity_name_var, width=18).pack(side=tk.LEFT, padx=(4, 10))
-        self.commodity_btn = ttk.Button(self.commodity_entry_frame, text='Szukaj', command=self.refresh_commodity_tab)
+        self.commodity_btn = ttk.Button(self.commodity_entry_frame, text=t('btn.search'), command=self.refresh_commodity_tab)
         self.commodity_btn.pack(side=tk.LEFT)
         self.commodity_modes = tce.SegmentedButtons(
-            self.tab_commodity, [(m, 'Gdzie kupić' if m == 'Kup' else 'Gdzie sprzedać') for m in COMMODITY_MODES],
+            self.tab_commodity, [(m, t(f'commodity.mode.{m}')) for m in COMMODITY_MODES],
             self.fonts, command=lambda _m: self.refresh_commodity_tab(), variable=self.commodity_mode_var)
         self.commodity_modes.pack(fill=tk.X, padx=10, pady=(6, 4))
-        self.commodity_header = tce.SectionHeader(self.tab_commodity, 'Find location', self.fonts)
+        self.commodity_header = tce.SectionHeader(self.tab_commodity, t('commodity.header'), self.fonts)
         self.commodity_header.pack(fill=tk.X, padx=10, pady=(6, 2))
         self.commodity_table = tce.DataTable(self.tab_commodity, [
-            ('station', 'Stacja', 220, 'w'), ('system', 'System', 180, 'w'), ('price', 'Cena', 100, 'e'),
-            ('volume', 'Zapas/popyt', 125, 'e'), ('distance', 'Dystans', 90, 'e'), ('pad', 'Pad', 70, 'center'),
-            ('age', 'Dane', 60, 'e')], height=15)
+            ('station', t('col.station'), 220, 'w'), ('system', t('col.system'), 180, 'w'),
+            ('price', t('col.price'), 100, 'e'), ('volume', t('commodity.col.volume'), 125, 'e'),
+            ('distance', t('col.distance'), 90, 'e'), ('pad', t('col.pad'), 70, 'center'),
+            ('age', t('col.age'), 60, 'e')], height=15)
         self.commodity_table.pack(fill=tk.BOTH, expand=True, padx=10, pady=(2, 10))
 
         self.tab_market = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_market, text='Market')
+        self.notebook.add(self.tab_market, text=t('panel.tab.market'))
 
         self.market_system_var = tk.StringVar(value='Sol')
         self.market_station_var = tk.StringVar(value='Abraham Lincoln')
         self.market_entry_frame = ttk.Frame(self.tab_market)
         self.market_entry_frame.pack(fill=tk.X, padx=10, pady=(10, 4))
-        ttk.Label(self.market_entry_frame, text='System:').pack(side=tk.LEFT)
+        ttk.Label(self.market_entry_frame, text=t('lbl.system')).pack(side=tk.LEFT)
         ttk.Entry(self.market_entry_frame, textvariable=self.market_system_var, width=18).pack(side=tk.LEFT, padx=(4, 10))
-        ttk.Label(self.market_entry_frame, text='Stacja:').pack(side=tk.LEFT)
+        ttk.Label(self.market_entry_frame, text=t('lbl.station')).pack(side=tk.LEFT)
         ttk.Entry(self.market_entry_frame, textvariable=self.market_station_var, width=22).pack(side=tk.LEFT, padx=(4, 10))
-        self.market_btn = ttk.Button(self.market_entry_frame, text='Pokaż', command=self.refresh_market_tab)
+        self.market_btn = ttk.Button(self.market_entry_frame, text=t('btn.show'), command=self.refresh_market_tab)
         self.market_btn.pack(side=tk.LEFT)
 
-        self.market_header = tce.SectionHeader(self.tab_market, 'Market details', self.fonts)
+        self.market_header = tce.SectionHeader(self.tab_market, t('market.header'), self.fonts)
         self.market_header.pack(fill=tk.X, padx=10, pady=(8, 4))
         self.market_tables = tk.Frame(self.tab_market, bg=tce.BG)
         self.market_tables.pack(fill=tk.BOTH, expand=True, padx=10, pady=(2, 10))
         self.market_tables.columnconfigure((0, 1), weight=1, uniform='m')
         self.market_tables.rowconfigure(1, weight=1)
-        self.market_exports_header = tce.SectionHeader(self.market_tables, 'Kupisz tu (eksport)', self.fonts)
+        self.market_exports_header = tce.SectionHeader(self.market_tables, t('market.exports'), self.fonts)
         self.market_exports_header.grid(row=0, column=0, sticky='ew', padx=(0, 6))
-        self.market_imports_header = tce.SectionHeader(self.market_tables, 'Sprzedasz tu (import)', self.fonts)
+        self.market_imports_header = tce.SectionHeader(self.market_tables, t('market.imports'), self.fonts)
         self.market_imports_header.grid(row=0, column=1, sticky='ew', padx=(6, 0))
         self.market_exports_table = tce.DataTable(self.market_tables, [
-            ('name', 'Towar', 200, 'w'), ('price', 'Cena', 90, 'e'), ('vs', 'vs śr.', 70, 'e'),
-            ('stock', 'Zapas', 90, 'e')], height=16)
+            ('name', t('col.commodity'), 200, 'w'), ('price', t('col.price'), 90, 'e'),
+            ('vs', t('market.col.vs_mean'), 70, 'e'), ('stock', t('col.stock'), 90, 'e')], height=16)
         self.market_exports_table.grid(row=1, column=0, sticky='nsew', padx=(0, 6), pady=(4, 0))
         self.market_imports_table = tce.DataTable(self.market_tables, [
-            ('name', 'Towar', 200, 'w'), ('price', 'Cena', 90, 'e'), ('vs', 'vs śr.', 70, 'e'),
-            ('demand', 'Popyt', 90, 'e')], height=16)
+            ('name', t('col.commodity'), 200, 'w'), ('price', t('col.price'), 90, 'e'),
+            ('vs', t('market.col.vs_mean'), 70, 'e'), ('demand', t('col.demand'), 90, 'e')], height=16)
         self.market_imports_table.grid(row=1, column=1, sticky='nsew', padx=(6, 0), pady=(4, 0))
 
         self.tab_journey = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_journey, text='Journey')
+        self.notebook.add(self.tab_journey, text=t('panel.tab.journey'))
 
         self.journey_start_var = tk.StringVar(value='Sol')
         self.journey_end_var = tk.StringVar(value='Colonia')
         self.journey_range_var = tk.StringVar(value='30.0')
         self.journey_entry_frame = ttk.Frame(self.tab_journey)
         self.journey_entry_frame.pack(fill=tk.X, padx=10, pady=(10, 4))
-        ttk.Label(self.journey_entry_frame, text='Start:').pack(side=tk.LEFT)
+        ttk.Label(self.journey_entry_frame, text=t('journey.start')).pack(side=tk.LEFT)
         ttk.Entry(self.journey_entry_frame, textvariable=self.journey_start_var, width=15).pack(side=tk.LEFT, padx=(4, 10))
-        ttk.Label(self.journey_entry_frame, text='Cel:').pack(side=tk.LEFT)
+        ttk.Label(self.journey_entry_frame, text=t('journey.end')).pack(side=tk.LEFT)
         ttk.Entry(self.journey_entry_frame, textvariable=self.journey_end_var, width=15).pack(side=tk.LEFT, padx=(4, 10))
-        ttk.Label(self.journey_entry_frame, text='Zasięg (ly):').pack(side=tk.LEFT)
+        ttk.Label(self.journey_entry_frame, text=t('lbl.range_ly')).pack(side=tk.LEFT)
         ttk.Entry(self.journey_entry_frame, textvariable=self.journey_range_var, width=8).pack(side=tk.LEFT, padx=(4, 10))
-        self.journey_calc_btn = ttk.Button(self.journey_entry_frame, text='Oblicz', command=self.refresh_journey_tab)
+        self.journey_calc_btn = ttk.Button(self.journey_entry_frame, text=t('btn.calculate'), command=self.refresh_journey_tab)
         self.journey_calc_btn.pack(side=tk.LEFT)
 
-        self.journey_header = tce.SectionHeader(self.tab_journey, 'Waypoints', self.fonts)
+        self.journey_header = tce.SectionHeader(self.tab_journey, t('journey.header'), self.fonts)
         self.journey_header.pack(fill=tk.X, padx=10, pady=(8, 2))
         self.journey_table = tce.DataTable(self.tab_journey, [
-            ('n', '#', 50, 'e'), ('system', 'System', 320, 'w'), ('jumps', 'Skoki', 80, 'e'),
-            ('jumped', 'Skok (ly)', 110, 'e'), ('left', 'Pozostało (ly)', 130, 'e'), ('neutron', 'Neutron', 90, 'center')],
+            ('n', '#', 50, 'e'), ('system', t('col.system'), 320, 'w'), ('jumps', t('journey.col.jumps'), 80, 'e'),
+            ('jumped', t('journey.col.jumped'), 110, 'e'), ('left', t('journey.col.left'), 130, 'e'),
+            ('neutron', t('journey.col.neutron'), 90, 'center')],
             height=18)
         self.journey_table.pack(fill=tk.BOTH, expand=True, padx=10, pady=(2, 10))
 
         self.tab_engineering = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_engineering, text='Inżynieria')
+        self.notebook.add(self.tab_engineering, text=t('panel.tab.engineering'))
 
         self._materials_lock = threading.Lock()
         self._materials_inventory: dict[str, int] = {}
@@ -318,87 +338,89 @@ class TradePanel:
         self.eng_entry_frame = ttk.Frame(self.tab_engineering)
         self.eng_entry_frame.pack(fill=tk.X, padx=10, pady=(10, 4))
         self.eng_entry_frame.columnconfigure(1, weight=1)
-        ttk.Label(self.eng_entry_frame, text='Blueprint:').grid(row=0, column=0, sticky='w')
+        ttk.Label(self.eng_entry_frame, text=t('eng.blueprint')).grid(row=0, column=0, sticky='w')
         self.eng_blueprint_combo = ttk.Combobox(self.eng_entry_frame, textvariable=self.eng_blueprint_var, state='readonly')
         self.eng_blueprint_combo.grid(row=0, column=1, columnspan=6, sticky='ew', padx=(4, 0), pady=2)
-        ttk.Label(self.eng_entry_frame, text='Grade od:').grid(row=1, column=0, sticky='w')
+        ttk.Label(self.eng_entry_frame, text=t('eng.grade_from')).grid(row=1, column=0, sticky='w')
         ttk.Combobox(self.eng_entry_frame, textvariable=self.eng_grade_from_var, values=['1', '2', '3', '4', '5'],
                      width=3, state='readonly').grid(row=1, column=1, sticky='w', padx=(4, 10), pady=2)
-        ttk.Label(self.eng_entry_frame, text='do:').grid(row=1, column=2, sticky='w')
+        ttk.Label(self.eng_entry_frame, text=t('eng.grade_to')).grid(row=1, column=2, sticky='w')
         ttk.Combobox(self.eng_entry_frame, textvariable=self.eng_grade_to_var, values=['1', '2', '3', '4', '5'],
                      width=3, state='readonly').grid(row=1, column=3, sticky='w', padx=(4, 10))
-        ttk.Label(self.eng_entry_frame, text='Rolle/grade:').grid(row=1, column=4, sticky='w')
+        ttk.Label(self.eng_entry_frame, text=t('eng.rolls')).grid(row=1, column=4, sticky='w')
         ttk.Entry(self.eng_entry_frame, textvariable=self.eng_rolls_var, width=4).grid(row=1, column=5, sticky='w', padx=(4, 10))
-        self.eng_btn = ttk.Button(self.eng_entry_frame, text='Oblicz', command=self.refresh_engineering_tab, state=tk.DISABLED)
+        self.eng_btn = ttk.Button(self.eng_entry_frame, text=t('btn.calculate'), command=self.refresh_engineering_tab,
+                                  state=tk.DISABLED)
         self.eng_btn.grid(row=1, column=6, sticky='e')
 
-        self.eng_header = tce.SectionHeader(self.tab_engineering, 'Wczytuję listę blueprintów...', self.fonts)
+        self.eng_header = tce.SectionHeader(self.tab_engineering, t('eng.loading'), self.fonts)
         self.eng_header.pack(fill=tk.X, padx=10, pady=(8, 2))
         self.eng_status = tk.Label(self.tab_engineering, text='', bg=tce.BG, fg=tce.ORANGE_DIM,
                                    font=self.fonts.body_bold, anchor='w')
         self.eng_status.pack(fill=tk.X, padx=10)
         self.eng_table = tce.DataTable(self.tab_engineering, [
-            ('name', 'Materiał', 280, 'w'), ('type', 'Typ', 120, 'w'), ('grade', 'G', 40, 'center'),
-            ('need', 'Potrzeba', 90, 'e'), ('have', 'Masz', 80, 'e'), ('missing', 'Brakuje', 90, 'e'),
-            ('hint', 'Gdzie zdobyć', 260, 'w')], height=16)
+            ('name', t('eng.col.material'), 280, 'w'), ('type', t('col.type'), 120, 'w'), ('grade', 'G', 40, 'center'),
+            ('need', t('eng.col.need'), 90, 'e'), ('have', t('eng.col.have'), 80, 'e'),
+            ('missing', t('eng.col.missing'), 90, 'e'), ('hint', t('eng.col.hint'), 260, 'w')], height=16)
         self.eng_table.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
         # Start z mainloopa: after() z watku roboczego dziala tylko gdy mainloop juz chodzi
         self.window.after(200, self._start_engineering_data_load)
 
         # --- Zakładka Ustawienia ---
         self.tab_settings = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_settings, text='Ustawienia')
+        self.notebook.add(self.tab_settings, text=t('panel.tab.settings'))
 
         self.settings_frame = ttk.Frame(self.tab_settings)
         self.settings_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         self.settings_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(self.settings_frame, text='Cel journey (system):').grid(row=0, column=0, sticky='w', padx=(0, 8), pady=4)
+        ttk.Label(self.settings_frame, text=t('settings.journey_target')).grid(row=0, column=0, sticky='w', padx=(0, 8), pady=4)
         self.journey_target_var = tk.StringVar(value=str(self.user_config.get('journey_target_system', '')))
         ttk.Entry(self.settings_frame, textvariable=self.journey_target_var).grid(row=0, column=1, sticky='ew', pady=4)
 
-        ttk.Label(self.settings_frame, text='Zasięg statku (ly):').grid(row=1, column=0, sticky='w', padx=(0, 8), pady=4)
+        ttk.Label(self.settings_frame, text=t('settings.ship_range')).grid(row=1, column=0, sticky='w', padx=(0, 8), pady=4)
         self.ship_range_var = tk.StringVar(value=str(self.user_config.get('ship_range_ly', 30.0)))
         ttk.Entry(self.settings_frame, textvariable=self.ship_range_var).grid(row=1, column=1, sticky='ew', pady=4)
 
-        ttk.Label(self.settings_frame, text='Materiały (kind):').grid(row=2, column=0, sticky='w', padx=(0, 8), pady=4)
+        ttk.Label(self.settings_frame, text=t('settings.material_kind')).grid(row=2, column=0, sticky='w', padx=(0, 8), pady=4)
         self.material_kind_var = tk.StringVar(value=str(self.user_config.get('material_kind', '')))
         ttk.Combobox(self.settings_frame, textvariable=self.material_kind_var,
                      values=['', 'Raw', 'Encoded', 'Manufactured'], state='readonly').grid(row=2, column=1, sticky='ew', pady=4)
 
-        ttk.Label(self.settings_frame, text='Mining (minerał):').grid(row=3, column=0, sticky='w', padx=(0, 8), pady=4)
+        ttk.Label(self.settings_frame, text=t('settings.mining_mineral')).grid(row=3, column=0, sticky='w', padx=(0, 8), pady=4)
         self.mining_mineral_var = tk.StringVar(value=str(self.user_config.get('mining_mineral', '')))
         ttk.Entry(self.settings_frame, textvariable=self.mining_mineral_var).grid(row=3, column=1, sticky='ew', pady=4)
 
-        ttk.Label(self.settings_frame, text='Klasa okna gry:').grid(row=4, column=0, sticky='w', padx=(0, 8), pady=4)
+        ttk.Label(self.settings_frame, text=t('settings.game_window_class')).grid(row=4, column=0, sticky='w', padx=(0, 8), pady=4)
         self.game_window_class_var = tk.StringVar(value=str(self.user_config.get('game_window_class', '')))
         ttk.Entry(self.settings_frame, textvariable=self.game_window_class_var).grid(row=4, column=1, sticky='ew', pady=4)
 
         self.bar_only_var = tk.BooleanVar(value=bool(self.user_config.get('bar_only_when_game_focused', False)))
-        ttk.Checkbutton(self.settings_frame, text='Pasek tylko gdy gra ma fokus', variable=self.bar_only_var).grid(row=5, column=1, sticky='w', pady=4)
+        ttk.Checkbutton(self.settings_frame, text=t('settings.bar_only_focused'), variable=self.bar_only_var).grid(row=5, column=1, sticky='w', pady=4)
 
-        self.pad_filter_var = tk.StringVar(value=PAD_FILTER_LABELS.get(self.user_config.get('pad_filter', 'auto'),
-                                                                        PAD_FILTER_LABELS['auto']))
+        pad_labels, market_labels = pad_filter_labels(), market_type_labels()
+        self.pad_filter_var = tk.StringVar(value=pad_labels.get(self.user_config.get('pad_filter', 'auto'),
+                                                                pad_labels['auto']))
         self.max_star_var = tk.StringVar(value=str(self.user_config.get('max_star_distance_ls', 5000)))
-        self.market_type_var = tk.StringVar(value=MARKET_TYPE_LABELS.get(self.user_config.get('market_type', 'all'),
-                                                                         MARKET_TYPE_LABELS['all']))
-        ttk.Label(self.settings_frame, text='Minimalny pad:').grid(row=6, column=0, sticky='w', padx=(0, 8), pady=4)
-        ttk.Combobox(self.settings_frame, textvariable=self.pad_filter_var, values=list(PAD_FILTER_LABELS.values()),
+        self.market_type_var = tk.StringVar(value=market_labels.get(self.user_config.get('market_type', 'all'),
+                                                                    market_labels['all']))
+        ttk.Label(self.settings_frame, text=t('settings.min_pad')).grid(row=6, column=0, sticky='w', padx=(0, 8), pady=4)
+        ttk.Combobox(self.settings_frame, textvariable=self.pad_filter_var, values=list(pad_labels.values()),
                      state='readonly').grid(row=6, column=1, sticky='ew', pady=4)
-        ttk.Label(self.settings_frame, text='Maks. od gwiazdy (ls, 0 = bez limitu):').grid(
+        ttk.Label(self.settings_frame, text=t('settings.max_star')).grid(
             row=7, column=0, sticky='w', padx=(0, 8), pady=4)
         ttk.Entry(self.settings_frame, textvariable=self.max_star_var).grid(row=7, column=1, sticky='ew', pady=4)
-        ttk.Label(self.settings_frame, text='Typ rynku:').grid(row=8, column=0, sticky='w', padx=(0, 8), pady=4)
-        ttk.Combobox(self.settings_frame, textvariable=self.market_type_var, values=list(MARKET_TYPE_LABELS.values()),
+        ttk.Label(self.settings_frame, text=t('settings.market_type')).grid(row=8, column=0, sticky='w', padx=(0, 8), pady=4)
+        ttk.Combobox(self.settings_frame, textvariable=self.market_type_var, values=list(market_labels.values()),
                      state='readonly').grid(row=8, column=1, sticky='ew', pady=4)
 
         self.bar_alpha_var = tk.DoubleVar(value=float(self.user_config.get('bar_alpha', 0.75)))
         self.bar_scale_var = tk.DoubleVar(value=float(self.user_config.get('bar_font_scale', 1.0)))
         self.panel_scale_var = tk.DoubleVar(value=float(self.user_config.get('panel_font_scale', 1.0)))
         for row, (title, var, lo, hi) in enumerate((
-                ('Przezroczystość paska:', self.bar_alpha_var, 0.3, 1.0),
-                ('Czcionka paska (skala):', self.bar_scale_var, 0.7, 1.8),
-                ('Czcionka panelu (skala):', self.panel_scale_var, 0.7, 1.8)), start=9):
+                (t('settings.bar_alpha'), self.bar_alpha_var, 0.3, 1.0),
+                (t('settings.bar_scale'), self.bar_scale_var, 0.7, 1.8),
+                (t('settings.panel_scale'), self.panel_scale_var, 0.7, 1.8)), start=9):
             ttk.Label(self.settings_frame, text=title).grid(row=row, column=0, sticky='w', padx=(0, 8), pady=4)
             line = ttk.Frame(self.settings_frame)
             line.grid(row=row, column=1, sticky='ew', pady=4)
@@ -408,11 +430,16 @@ class TradePanel:
                       command=lambda _v, var=var, value=value: self._appearance_preview(var, value)).pack(
                 side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
 
-        self.save_settings_btn = ttk.Button(self.settings_frame, text='Zapisz', command=self.save_settings)
-        self.save_settings_btn.grid(row=12, column=1, sticky='w', pady=(10, 4))
+        self.language_var = tk.StringVar(value=LANGUAGES.get(self.user_config.get('language', 'pl'), LANGUAGES['pl']))
+        ttk.Label(self.settings_frame, text=t('settings.language')).grid(row=12, column=0, sticky='w', padx=(0, 8), pady=4)
+        ttk.Combobox(self.settings_frame, textvariable=self.language_var, values=list(LANGUAGES.values()),
+                     state='readonly').grid(row=12, column=1, sticky='ew', pady=4)
+
+        self.save_settings_btn = ttk.Button(self.settings_frame, text=t('btn.save'), command=self.save_settings)
+        self.save_settings_btn.grid(row=13, column=1, sticky='w', pady=(10, 4))
 
         self.settings_status_var = tk.StringVar(value='')
-        ttk.Label(self.settings_frame, textvariable=self.settings_status_var).grid(row=13, column=1, sticky='w', pady=4)
+        ttk.Label(self.settings_frame, textvariable=self.settings_status_var).grid(row=14, column=1, sticky='w', pady=4)
 
         tce.uppercase_static_texts(self.window)
         self._render_context()
@@ -451,15 +478,15 @@ class TradePanel:
 
     def _render_context(self) -> None:
         ctx = self.context()
-        where = f"{ctx['system']} · {ctx['station']}" if ctx['station'] else (ctx['system'] or 'nieznana (czekam na journal)')
-        ship = ctx['ship'] or 'nieznany'
+        where = f"{ctx['system']} · {ctx['station']}" if ctx['station'] else (ctx['system'] or t('panel.unknown_position'))
+        ship = ctx['ship'] or t('panel.unknown_ship')
         if ctx['capacity']:
             ship += f" · {ctx['capacity']:.0f} t"
         if ctx['jump_range']:
             ship += f" · {ctx['jump_range']:.1f} ly"
         cargo = sum(int(c.get('Count') or 0) for c in ctx['cargo'])
-        self.context_label.config(text=f'POZYCJA: {where}    STATEK: {ship}    ŁADUNEK: {cargo} t    '
-                                       f'FILTR: {self._market_filter().describe()}'.upper())
+        self.context_label.config(text=t('panel.context', where=where, ship=ship, cargo=cargo,
+                                         filter=self._market_filter().describe()).upper())
 
     def _open_settings(self) -> None:
         self.nav.select_frame(self.tab_settings)
@@ -470,7 +497,7 @@ class TradePanel:
         if not system_name:
             return
         self.system_refresh_btn.config(state=tk.DISABLED)
-        self.system_header.set(f'{system_name} — szukam stacji...', '')
+        self.system_header.set(t('system.searching', system=system_name), '')
         threading.Thread(target=self._system_worker, args=(system_name,), daemon=True).start()
 
     def _system_worker(self, system_name: str) -> None:
@@ -492,11 +519,12 @@ class TradePanel:
               s.primary_economy or '?', s.allegiance or '?') for s in stations],
             sort_values=[{'arrival': s.distance_to_arrival} for s in stations])
         if error:
-            self.system_header.set(f'{system_name} — błąd: {error}', '')
+            self.system_header.set(t('panel.error_with', what=system_name, error=error), '')
         elif stations:
-            self.system_header.set(f'Stacje w systemie {system_name}', f'{len(stations)} stacji')
+            self.system_header.set(t('system.found', system=system_name),
+                                   t('system.count', **_count(len(stations), 'n.stations')))
         else:
-            self.system_header.set(f'{system_name}: brak danych o stacjach', '')
+            self.system_header.set(t('system.none', system=system_name), '')
         self.system_refresh_btn.config(state=tk.NORMAL)
 
     def refresh_materials_tab(self) -> None:
@@ -506,7 +534,7 @@ class TradePanel:
         if not system_name or not kind:
             return
         self.materials_btn.config(state=tk.DISABLED)
-        self.materials_header.set(f'Trader {kind} wokół {system_name} — szukam...', '')
+        self.materials_header.set(t('materials.searching', kind=kind, system=system_name), '')
         threading.Thread(target=self._materials_worker, args=(system_name, kind, self._market_filter()),
                          daemon=True).start()
 
@@ -532,11 +560,12 @@ class TradePanel:
              for t in traders],
             sort_values=[{'distance': t.distance, 'arrival': t.distance_to_arrival} for t in traders])
         if error:
-            self.materials_header.set(f'Błąd: {error}', '')
+            self.materials_header.set(t('panel.error', error=error), '')
         elif traders:
-            self.materials_header.set(f'Trader {kind} wokół {system_name}', f'{len(traders)} stacji, najbliżej najpierw')
+            self.materials_header.set(t('materials.found', kind=kind, system=system_name),
+                                      t('materials.count', **_count(len(traders), 'n.stations')))
         else:
-            self.materials_header.set(f'Brak traderów {kind} w zasięgu 50 ly od {system_name}', '')
+            self.materials_header.set(t('materials.none', kind=kind, system=system_name), '')
         self.materials_btn.config(state=tk.NORMAL)
 
     def refresh_mining_tab(self) -> None:
@@ -546,7 +575,7 @@ class TradePanel:
         if not system_name or not mineral:
             return
         self.mining_btn.config(state=tk.DISABLED)
-        self.mining_header.set(f'{mineral} wokół {system_name} — szukam...', '')
+        self.mining_header.set(t('mining.searching', mineral=mineral, system=system_name), '')
         threading.Thread(target=self._mining_worker, args=(system_name, mineral, self._market_filter()),
                          daemon=True).start()
 
@@ -557,13 +586,13 @@ class TradePanel:
             hotspots = find_mining_hotspots(system_name, mineral, max_ly=50, size=20)
         except Exception as e:
             hotspots = []
-            errors.append(f'hotspoty: {e}')
+            errors.append(t('mining.err_hotspots', error=e))
         try:
             buyers = [b for b in find_mineral_buyers(mineral, system_name, max_ly=60, size=100)
                       if market_filter.accepts(b.pad_size, b.distance_to_arrival, b.station_type)][:20]
         except Exception as e:
             buyers = []
-            errors.append(f'kupcy: {e}')
+            errors.append(t('mining.err_buyers', error=e))
         try:
             self.window.after(0, self._mining_done, system_name, mineral, hotspots, buyers, '; '.join(errors))
         except Exception:
@@ -581,7 +610,8 @@ class TradePanel:
             sort_values=[{'price': b.sell_price, 'demand': b.demand, 'distance': b.distance} for b in buyers])
         self.mining_hotspots_header.set(right_text=str(len(hotspots)))
         self.mining_buyers_header.set(right_text=str(len(buyers)))
-        self.mining_header.set(f'Błąd: {error}' if error else f'{mineral} wokół {system_name}', '')
+        self.mining_header.set(t('panel.error', error=error) if error else
+                               t('mining.found', mineral=mineral, system=system_name), '')
         self.mining_btn.config(state=tk.NORMAL)
 
     def refresh_commodity_tab(self) -> None:
@@ -592,7 +622,7 @@ class TradePanel:
         if not system_name or not commodity or str(self.commodity_btn['state']) == tk.DISABLED:
             return
         self.commodity_btn.config(state=tk.DISABLED)
-        self.commodity_header.set(f'{commodity} — szukam wokół {system_name}...', '')
+        self.commodity_header.set(t('commodity.searching', commodity=commodity, system=system_name), '')
         threading.Thread(target=self._commodity_worker, args=(system_name, commodity, mode, self._market_filter()),
                          daemon=True).start()
 
@@ -600,7 +630,7 @@ class TradePanel:
         """Watek roboczy: NIE dotyka widgetow Tk — pobiera dane, filtruje (pad/ls/typ) i oddaje wiersze przez after(0)."""
         rows, error = [], ''
         try:
-            if mode == 'Sprzedaj':
+            if mode == 'sell':
                 found = [b for b in find_mineral_buyers(commodity, system_name, max_ly=60, size=100)
                          if market_filter.accepts(b.pad_size, b.distance_to_arrival, b.station_type)][:25]
                 rows = [(b.station_name, b.system_name, f'{b.sell_price:,} cr', f'{b.demand:,}', f'{b.distance:.1f} ly',
@@ -624,15 +654,13 @@ class TradePanel:
                         filter_text: str = '') -> None:
         """Wywolywane w watku Tk: pokaz wynik i odblokuj przycisk."""
         self.commodity_table.set_rows([r[:-1] for r in rows], sort_values=[r[-1] for r in rows])
-        what = 'kupić' if mode == 'Kup' else 'sprzedać'
         if error:
-            self.commodity_header.set(f'Błąd: {error}', '')
+            self.commodity_header.set(t('panel.error', error=error), '')
         elif rows:
-            order = 'najtaniej najpierw' if mode == 'Kup' else 'najdrożej najpierw'
-            self.commodity_header.set(f'Gdzie {what}: {commodity} (wokół {system_name})',
-                                      f'{len(rows)} stacji, {order} · {filter_text}')
+            self.commodity_header.set(t(f'commodity.found_{mode}', commodity=commodity, system=system_name),
+                                      t(f'commodity.count_{mode}', filter=filter_text, **_count(len(rows), 'n.stations')))
         else:
-            self.commodity_header.set(f'Brak stacji, gdzie {what} {commodity} (albo nieznana nazwa)', filter_text)
+            self.commodity_header.set(t(f'commodity.none_{mode}', commodity=commodity), filter_text)
         self.commodity_btn.config(state=tk.NORMAL)
 
     def show_route(self, route) -> None:
@@ -653,20 +681,21 @@ class TradePanel:
         if route is None:
             return
         if route.error:
-            self.route_header.set('Trasa handlowa', '')
-            self.route_status.config(text=f'BŁĄD TRASY: {route.error}'.upper(), fg=tce.RED)
+            self.route_header.set(t('route.header'), '')
+            self.route_status.config(text=t('route.error', error=route.error).upper(), fg=tce.RED)
             return
         hops = route.hops_list or []
         current = getattr(route, '_current_hop', 1)
         steps = getattr(route, '_checklist_text', '')
-        finished = 'ukończona' in steps
+        finished = getattr(route, '_finished', False)
         start = hops[0] if hops else None
-        self.route_header.set(f'Trasa z {start.source_system} · {start.source_station}' if start else 'Trasa handlowa',
-                              f'{len(hops)} {_hops_word(len(hops))} · zysk {route.total_profit:,} cr')
+        self.route_header.set(t('route.from', system=start.source_system, station=start.source_station)
+                              if start else t('route.header'),
+                              t('route.summary', profit=f'{route.total_profit:,}', **_count(len(hops), 'n.hops')))
         if finished:
-            self.route_status.config(text='TRASA UKOŃCZONA', fg=tce.GREEN)
+            self.route_status.config(text=t('route.done'), fg=tce.GREEN)
         else:
-            self.route_status.config(text=f'TRASA AKTYWNA — HOP {current}/{len(hops)}', fg=tce.GREEN)
+            self.route_status.config(text=t('route.active', n=current, total=len(hops)), fg=tce.GREEN)
         for i, hop in enumerate(hops, 1):
             self._route_card(i, hop, done=finished or i < current, active=not finished and i == current,
                              steps=steps if not finished and i == current else '')
@@ -682,8 +711,10 @@ class TradePanel:
         mark = '✓' if done else ('▶' if active else str(index))
         tk.Label(card, text=mark, bg=bg, fg=tce.GREEN if done else fg, font=f.big, width=3).grid(
             row=0, column=0, rowspan=3, sticky='ns')
-        buy = f'→  {hop.source_station} · {hop.source_system}    KUP {hop.commodity} ×{hop.amount} @ {hop.buy_price:,} CR'
-        sell = f'←  {hop.destination_station} · {hop.destination_system}    SPRZEDAJ @ {hop.sell_price:,} CR'
+        buy = t('route.card_buy', station=hop.source_station, system=hop.source_system, commodity=hop.commodity,
+                amount=hop.amount, price=f'{hop.buy_price:,}')
+        sell = t('route.card_sell', station=hop.destination_station, system=hop.destination_system,
+                 price=f'{hop.sell_price:,}')
         tk.Label(card, text=buy.upper(), bg=bg, fg=fg, font=f.body_bold, anchor='w').grid(
             row=0, column=1, sticky='ew', padx=(4, 8), pady=(6, 0))
         tk.Label(card, text=sell.upper(), bg=bg, fg=fg, font=f.body_bold, anchor='w').grid(
@@ -727,13 +758,13 @@ class TradePanel:
         try:
             max_ly = float(self.nearby_range_var.get().strip())
         except ValueError:
-            self.nearby_header.set('Błąd: zasięg musi być liczbą', '')
+            self.nearby_header.set(t('err.range_number'), '')
             return
         if not system_name or not station_name or str(self.nearby_btn['state']) == tk.DISABLED:
             return
         capacity = int(self.context()['capacity'] or 0)
         self.nearby_btn.config(state=tk.DISABLED)
-        self.nearby_header.set(f'{station_name} ({system_name}) — liczę okazje w {max_ly:.0f} ly...', '')
+        self.nearby_header.set(t('nearby.searching', station=station_name, system=system_name, ly=f'{max_ly:.0f}'), '')
         threading.Thread(target=self._nearby_worker, daemon=True,
                          args=(system_name, station_name, max_ly, capacity, self._market_filter(), self._jump_range())).start()
         self.refresh_cargo_sales()
@@ -771,14 +802,15 @@ class TradePanel:
             trades = rank_trades(self._nearby_cands, mode)
             self.nearby_table.set_rows([self._trade_row(t, names, True) for t in trades],
                                        sort_values=[self._trade_sort(t) for t in trades])
-            hold = f'ładownia {capacity} t' if capacity else 'ładownia 304 t (domyślnie — czekam na Loadout)'
+            hold = t('nearby.hold', n=capacity) if capacity else t('nearby.hold_default')
             if error:
-                self.nearby_header.set(f'{station_name} ({system_name}) — błąd: {error}', '')
+                self.nearby_header.set(t('panel.error_with', what=f'{station_name} ({system_name})', error=error), '')
             elif trades:
-                self.nearby_header.set(f'Kup w {station_name} → sprzedaj w okolicy',
-                                       f'{len(trades)} towarów · {RANK_MODES[mode]} · {hold} · {filter_text}')
+                self.nearby_header.set(t('nearby.found_title', station=station_name),
+                                       t('nearby.found', mode=t(f'rank.{mode}'), hold=hold, filter=filter_text,
+                                         **_count(len(trades), 'n.commodities')))
             else:
-                self.nearby_header.set(f'{station_name}: brak zyskownych okazji w zasięgu', f'{hold} · {filter_text}')
+                self.nearby_header.set(t('nearby.none', station=station_name), f'{hold} · {filter_text}')
         self._render_cargo()
 
     def refresh_cargo_sales(self) -> None:
@@ -789,12 +821,12 @@ class TradePanel:
         reference = ctx['system'] or self.nearby_system_var.get().strip()
         if not cargo:
             self.nearby_cargo_table.set_rows([])
-            self.nearby_cargo_header.set('Twój ładunek — gdzie sprzedać', 'ładownia pusta')
+            self.nearby_cargo_header.set(t('nearby.cargo_header'), t('nearby.hold_empty'))
             return
         if self._cargo_busy or not reference:
             return
         self._cargo_busy = True
-        self.nearby_cargo_header.set('Twój ładunek — gdzie sprzedać', f'liczę wokół {reference}...')
+        self.nearby_cargo_header.set(t('nearby.cargo_header'), t('nearby.cargo_searching', system=reference))
         try:
             max_ly = float(self.nearby_range_var.get().strip())
         except ValueError:
@@ -829,9 +861,9 @@ class TradePanel:
                                          sort_values=[self._trade_sort(t) for t in trades])
         total = sum(t.total_profit for t in trades)
         unsold = len(cargo) - len(trades)
-        right = f'razem {total:,} cr' + (f' · {unsold} bez kupca w zasięgu' if unsold else '')
-        self.nearby_cargo_header.set(f'Twój ładunek — gdzie sprzedać (wokół {reference})',
-                                     f'błąd: {error}' if error else right)
+        right = t('nearby.cargo_total', total=f'{total:,}') + (t('nearby.cargo_unsold', n=unsold) if unsold else '')
+        self.nearby_cargo_header.set(t('nearby.cargo_header_at', system=reference),
+                                     t('nearby.cargo_error', error=error) if error else right)
 
     def show_docked_station(self, system_name: str, station_name: str) -> None:
         """Wolane z watku watchera po Docked: przekaz do watku Tk przez after(0)."""
@@ -884,18 +916,18 @@ class TradePanel:
         labels = sorted(self._blueprints)
         self.eng_blueprint_combo.config(values=labels)
         if not labels or not table:
-            self.eng_header.set('Nie udało się pobrać danych blueprintów/materiałów (brak sieci i brak cache)', '')
+            self.eng_header.set(t('eng.no_data'), '')
             return
         self.eng_btn.config(state=tk.NORMAL)
-        self.eng_header.set('Wybierz blueprint i grade, kliknij Oblicz', f'{len(labels)} blueprintów')
+        self.eng_header.set(t('eng.pick'), t('eng.count', **_count(len(labels), 'n.blueprints')))
         self.eng_status.config(text=self._materials_status_line().upper())
 
     def _materials_status_line(self) -> str:
         with self._materials_lock:
             count, ts = len(self._materials_inventory), self._materials_timestamp
         if not ts:
-            return 'Stan materiałów: brak (event Materials pojawia się w journalu przy starcie gry).'
-        return f'Stan materiałów z journala: {ts} ({count} pozycji).'
+            return t('eng.inventory_none')
+        return t('eng.inventory', ts=ts, n=count)
 
     def refresh_engineering_tab(self) -> None:
         """Bez sieci: dane juz w pamieci — liczymy w watku Tk."""
@@ -906,22 +938,22 @@ class TradePanel:
             g_from, g_to = int(self.eng_grade_from_var.get()), int(self.eng_grade_to_var.get())
             rolls = int(self.eng_rolls_var.get().strip())
         except ValueError:
-            self.eng_header.set('Błąd: grade i rolle muszą być liczbami', '')
+            self.eng_header.set(t('eng.err_numbers'), '')
             return
         if g_from > g_to or rolls < 1:
-            self.eng_header.set('Błąd: "grade od" nie może być większy niż "do", rolle >= 1', '')
+            self.eng_header.set(t('eng.err_range'), '')
             return
         with self._materials_lock:
             inventory = dict(self._materials_inventory)
         needs = mats.missing_for(bp, g_from, g_to, rolls, inventory, self._material_table)
         self.eng_table.set_rows(
             [(n.name, n.type, f'G{n.rarity}' if n.rarity else '?', n.need, n.have, n.missing or '✓',
-              MATERIAL_HINTS.get(n.type, '?') if n.missing else '') for n in needs],
+              _material_hint(n.type) if n.missing else '') for n in needs],
             sort_values=[{'need': n.need, 'have': n.have, 'missing': n.missing, 'grade': n.rarity} for n in needs],
             tags=['bad' if n.missing else 'good' for n in needs])
         missing = sum(1 for n in needs if n.missing)
-        self.eng_header.set(f'{bp.label} — grade {g_from}→{g_to}, {rolls} roll/grade',
-                            f'brakuje {missing} z {len(needs)}' if missing else 'masz wszystko')
+        self.eng_header.set(t('eng.result', blueprint=bp.label, g_from=g_from, g_to=g_to, rolls=rolls),
+                            t('eng.missing', n=missing, total=len(needs)) if missing else t('eng.complete'))
         self.eng_status.config(text=self._materials_status_line().upper())
 
     def refresh_market_tab(self) -> None:
@@ -931,7 +963,7 @@ class TradePanel:
         if not system_name or not station_name:
             return
         self.market_btn.config(state=tk.DISABLED)
-        self.market_header.set(f'{station_name} ({system_name}) — pobieram rynek...', '')
+        self.market_header.set(t('market.loading', station=station_name, system=system_name), '')
         threading.Thread(target=self._market_worker, args=(system_name, station_name), daemon=True).start()
 
     def _market_worker(self, system_name: str, station_name: str) -> None:
@@ -961,9 +993,9 @@ class TradePanel:
             tags=['good' if i.mean_price and i.sell_price > i.mean_price else '' for i in imports])
         title = f'{market.station_name} ({market.system_name})'
         if market.error:
-            self.market_header.set(f'{title} — błąd: {market.error}', '')
+            self.market_header.set(t('panel.error_with', what=title, error=market.error), '')
         else:
-            self.market_header.set(title, f'dane {_data_age(market.updated_at)}')
+            self.market_header.set(title, t('market.age', age=_data_age(market.updated_at)))
         self.market_exports_header.set(right_text=str(len(exports)))
         self.market_imports_header.set(right_text=str(len(imports)))
         self.market_btn.config(state=tk.NORMAL)
@@ -975,12 +1007,12 @@ class TradePanel:
         try:
             ship_range = float(self.journey_range_var.get().strip())
         except ValueError:
-            self.journey_header.set('Błąd: zasięg musi być liczbą', '')
+            self.journey_header.set(t('err.range_number'), '')
             return
         if not start or not end:
             return
         self.journey_calc_btn.config(state=tk.DISABLED)
-        self.journey_header.set(f'{start} → {end} (zasięg {ship_range} ly) — liczę trasę, do 2 min...', '')
+        self.journey_header.set(t('journey.calculating', start=start, end=end, range=ship_range), '')
         threading.Thread(target=self._journey_worker, args=(start, end, ship_range), daemon=True).start()
 
     def _journey_worker(self, start: str, end: str, ship_range: float) -> None:
@@ -1004,10 +1036,11 @@ class TradePanel:
                          for i, h in enumerate(hops, 1)],
             tags=['good' if h.neutron_star else '' for h in hops])
         if plan.error:
-            self.journey_header.set(f'Błąd: {plan.error}', '')
+            self.journey_header.set(t('panel.error', error=plan.error), '')
         else:
             self.journey_header.set(f'{plan.start_system} → {plan.end_system}',
-                                    f'{plan.total_jumps} skoków · {plan.total_distance:,.0f} ly')
+                                    t('journey.summary', distance=f'{plan.total_distance:,.0f}',
+                                      **_count(plan.total_jumps, 'n.jumps')))
         self.journey_calc_btn.config(state=tk.NORMAL)
 
     def save_settings(self) -> None:
@@ -1021,17 +1054,19 @@ class TradePanel:
         try:
             ship_range = float(ship_range_str)
         except ValueError:
-            self.settings_status_var.set('Błąd: zasięg musi być liczbą.')
+            self.settings_status_var.set(t('settings.err_range'))
             return
         try:
             max_star = float(self.max_star_var.get().strip().replace(',', '.'))
             if max_star < 0:
                 raise ValueError
         except ValueError:
-            self.settings_status_var.set('Błąd: odległość od gwiazdy musi być liczbą ≥ 0.')
+            self.settings_status_var.set(t('settings.err_star'))
             return
-        pad_filter = next((k for k, v in PAD_FILTER_LABELS.items() if v == self.pad_filter_var.get()), 'auto')
-        market_type = next((k for k, v in MARKET_TYPE_LABELS.items() if v == self.market_type_var.get()), 'all')
+        pad_filter = next((k for k, v in pad_filter_labels().items() if v == self.pad_filter_var.get()), 'auto')
+        market_type = next((k for k, v in market_type_labels().items() if v == self.market_type_var.get()), 'all')
+        language = next((k for k, v in LANGUAGES.items() if v == self.language_var.get()), 'pl')
+        language_changed = language != self.user_config.get('language', 'pl')
 
         # Aktualizuj config in-place
         self.user_config.update({
@@ -1047,15 +1082,17 @@ class TradePanel:
             'pad_filter': pad_filter,
             'max_star_distance_ls': max_star,
             'market_type': market_type,
+            'language': language,
         })
 
         # Zapisz do pliku
         try:
             save_user_config(self.user_config, self.config_path)
-            self.settings_status_var.set('Zapisano.')
+            self.settings_status_var.set(t('settings.saved_restart') if language_changed else t('settings.saved'))
             self._render_context()
         except Exception as e:
-            self.settings_status_var.set(f'Błąd zapisu: {e}')
+            self.settings_status_var.set(t('settings.err_save', error=e))
+
 
     def show(self) -> None:
         """Pokaż okno panelu (deiconify + podnieś na wierzch)."""

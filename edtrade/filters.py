@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from typing import Optional
 
+from .i18n import t
+
 PAD_RANK = {"small": 1, "medium": 2, "large": 3}
 PLANETARY_STATION_TYPES = frozenset({
     "crateroutpost", "craterport", "onfootsettlement", "surfacestation", "planetaryport", "planetaryoutpost",
@@ -41,10 +43,11 @@ class MarketFilter:
         return self.pad_ok(pad_size) and self.star_ok(distance_to_arrival) and self.type_ok(station_type)
 
     def describe(self) -> str:
-        parts = [f"pad {self.min_pad[0].upper()}+" if self.min_pad != "small" else "każdy pad"]
-        parts.append(f"≤{self.max_star_ls:,.0f} ls" if self.max_star_ls else "bez limitu ls")
+        parts = [t("filter.pad", size=self.min_pad[0].upper()) if self.min_pad != "small" else t("filter.any_pad")]
+        parts.append(f"≤{self.max_star_ls:,.0f} ls" if self.max_star_ls else t("filter.no_ls_limit"))
         if self.market_type != "all":
-            parts.append("kosmos" if self.market_type == "space" else "planetarne")
+            parts.append(t("filter.space") if self.market_type == "space" else t("filter.planetary"))
+
         return " · ".join(parts)
 
 

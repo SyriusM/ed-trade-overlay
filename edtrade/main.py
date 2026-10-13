@@ -24,6 +24,7 @@ from . import market_cache
 from .market_cache import init_market_cache
 from . import config as user_config_module
 from .checklist import RouteChecklist, load_commodity_names
+from .i18n import plural, set_language, t
 from typing import Optional
 
 logger = logging.getLogger("edto")
@@ -118,6 +119,7 @@ class EDTradeOverlayApp:
         )
         self._show_overlay = not args.no_overlay
         self.user_config = user_config_module.load_user_config()
+        set_language(str(self.user_config.get('language', 'pl')))
         self.overlay = TradeOverlay() if self._show_overlay else None
         if self.overlay is not None:
             self.overlay.apply_appearance(float(self.user_config.get('bar_alpha', 0.75)),
@@ -311,7 +313,7 @@ class EDTradeOverlayApp:
                     info_parts.append(f'{sys_info.allegiance} | sec:{sys_info.security}')
             stations = search_stations(system)
             if stations:
-                info_parts.append(f'{len(stations)} stacji')
+                info_parts.append(t('bar.stations', n=len(stations), word=plural(len(stations), 'n.stations')))
             if self.overlay:
                 self.overlay.set_system_info(f'{system} · {station}\n' + ' | '.join(info_parts))
         except Exception:
@@ -324,8 +326,9 @@ class EDTradeOverlayApp:
                 ship_range = self.user_config.get('ship_range_ly', 30.0)
                 plan = self.trade_engine.plan_journey(system, target, ship_range)
                 if not plan.error:
-                    text = f'-> {plan.end_system}: {plan.total_jumps} skokow, {plan.total_distance:.0f} ly'
-                    self.overlay.register_page('journey', lambda t=text: t)
+                    text = t('bar.journey', target=plan.end_system, jumps=plan.total_jumps,
+                             word=plural(plan.total_jumps, 'n.jumps'), distance=f'{plan.total_distance:.0f}')
+                    self.overlay.register_page('journey', lambda text=text: text)
         except Exception:
             logger.exception('Błąd automatu journey przy Docked')
 
@@ -336,8 +339,8 @@ class EDTradeOverlayApp:
                 traders = find_material_traders(system, material_kind, max_ly=50, size=5)
                 if traders:
                     names = ', '.join(t.name for t in traders[:3])
-                    text = f'Materialy({material_kind}): {names}'
-                    self.overlay.register_page('materials', lambda t=text: t)
+                    text = t('bar.materials', kind=material_kind, names=names)
+                    self.overlay.register_page('materials', lambda text=text: text)
         except Exception:
             logger.exception('Błąd automatu materiały przy Docked')
 
@@ -350,13 +353,14 @@ class EDTradeOverlayApp:
                 parts = []
                 if hotspots:
                     h = hotspots[0]
-                    parts.append(f'{mineral}: {h.body_name} ({h.count}x)')
+                    parts.append(t('bar.mining_hotspot', mineral=mineral, body=h.body_name, count=h.count))
                 if buyers:
                     b = buyers[0]
-                    parts.append(f'sprzedaj: {b.station_name} {b.sell_price:,}cr')
+                    parts.append(t('bar.mining_sell', station=b.station_name, price=f'{b.sell_price:,}'))
+
                 if parts:
                     text = ' | '.join(parts)
-                    self.overlay.register_page('mining', lambda t=text: t)
+                    self.overlay.register_page('mining', lambda text=text: text)
         except Exception:
             logger.exception('Błąd automatu mining przy Docked')
 

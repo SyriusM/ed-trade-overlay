@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from .i18n import t
 from .materials import fetch_cached
 from .trade import Hop, TradeRoute
 
@@ -142,27 +143,30 @@ class RouteChecklist:
             self.finished = True
 
     def _sync_route(self) -> None:
-        """Overlay czyta route._current_hop (1-based) i route._checklist_text."""
+        """Overlay czyta route._current_hop (1-based), route._checklist_text i route._finished."""
         self.route._current_hop = min(self.hop_index + 1, max(len(self.hops), 1))
         self.route._checklist_text = self.status_text()
+        self.route._finished = self.finished
 
     def status_text(self) -> str:
         if self.finished:
-            return "[✓ trasa ukończona]"
+            return t("check.done")
         hop = self.hop
         amount = hop.amount or 0
+        buy_word, fly_word, sell_word = t("check.buy"), t("check.fly"), t("check.sell")
         if self.bought >= amount > 0:
-            buy = f"✓ kup {self.bought}/{amount}"
+            buy = f"✓ {buy_word} {self.bought}/{amount}"
         elif self.bought:
-            buy = f"◐ kup {self.bought}/{amount}"
+            buy = f"◐ {buy_word} {self.bought}/{amount}"
         else:
-            buy = f"▶ kup {amount}" if amount else "▶ kup"
+            buy = f"▶ {buy_word} {amount}" if amount else f"▶ {buy_word}"
         if self.arrived:
-            fly = "✓ leć"
+            fly = f"✓ {fly_word}"
         else:
-            fly = "▶ leć" if self.bought else "○ leć"
+            fly = f"▶ {fly_word}" if self.bought else f"○ {fly_word}"
         if self.sold:
-            sell = f"◐ sprzedaj {self.sold}/{self.bought}"
+            sell = f"◐ {sell_word} {self.sold}/{self.bought}"
         else:
-            sell = "▶ sprzedaj" if self.arrived else "○ sprzedaj"
+            sell = f"▶ {sell_word}" if self.arrived else f"○ {sell_word}"
+
         return f"[{buy} · {fly} · {sell}]"

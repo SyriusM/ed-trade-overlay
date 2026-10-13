@@ -11,6 +11,7 @@ import tkinter as tk
 from typing import Optional, Callable
 
 from . import tce_theme as tce
+from .i18n import plural, t
 from .trade import TradeRoute
 
 logger = logging.getLogger(__name__)
@@ -100,7 +101,7 @@ class TradeOverlay:
         body.columnconfigure(2, weight=3, uniform="ui")
         body.rowconfigure(0, weight=1)
 
-        left = self._display(body, "POZYCJA")
+        left = self._display(body, t("bar.position"))
         left.grid(row=0, column=0, sticky="nsew", padx=(MARGIN, 6), pady=(4, 4))
         self.system_info_label = tk.Label(left.content, text="", font=self.font_info, fg=tce.ORANGE,
                                           bg=tce.ROW_BG, anchor="w", justify=tk.LEFT)
@@ -108,16 +109,16 @@ class TradeOverlay:
 
         center = tk.Frame(body, bg=tce.BG)
         center.grid(row=0, column=1, sticky="nsew")
-        self.header = tk.Label(center, text="ED TRADE", font=self.font_tab, fg=tce.TEXT_ON_ORANGE,
+        self.header = tk.Label(center, text=t("bar.title"), font=self.font_tab, fg=tce.TEXT_ON_ORANGE,
                                bg=tce.ORANGE, padx=30)
         self.header.pack(side=tk.TOP)
-        self.status_label = tk.Label(center, text="OCZEKIWANIE NA DOKOWANIE", font=self.font_title,
+        self.status_label = tk.Label(center, text=t("bar.waiting"), font=self.font_title,
                                      fg=tce.ORANGE_DIM, bg=tce.BG)
         self.status_label.pack(side=tk.TOP, pady=(2, 0))
         self.steps_label = tk.Label(center, text="", font=self.font_info, fg=tce.ORANGE, bg=tce.BG)
         self.steps_label.pack(side=tk.TOP)
 
-        right = self._display(body, "CEL")
+        right = self._display(body, t("bar.target"))
         right.grid(row=0, column=2, sticky="nsew", padx=(6, MARGIN), pady=(4, 4))
         self.dest_label = tk.Label(right.content, text="", font=self.font_highlight, fg=tce.TEXT_WHITE,
                                    bg=tce.ROW_BG, anchor="w")
@@ -171,7 +172,7 @@ class TradeOverlay:
 
         if self.current_route is None:
             self._hide_content()
-            self.status_label.config(text="OCZEKIWANIE NA DOKOWANIE", fg=tce.ORANGE_DIM)
+            self.status_label.config(text=t("bar.waiting"), fg=tce.ORANGE_DIM)
             return
 
         route = self.current_route
@@ -181,14 +182,14 @@ class TradeOverlay:
 
         if route.error:
             self._hide_content()
-            self.route_label.config(text=f"BŁĄD: {route.error}".upper(), fg=tce.RED)
-            self.status_label.config(text="BŁĄD TRASY", fg=tce.RED)
+            self.route_label.config(text=t("bar.error", error=route.error).upper(), fg=tce.RED)
+            self.status_label.config(text=t("bar.route_error"), fg=tce.RED)
             return
 
         # Pojedynczy wiersz trasy — wyśrodkowany
         # Dodajemy: licznik hopów, skoki FSD, świeżość danych, cargo awareness
         hop_num = getattr(route, '_current_hop', 1)
-        hop_info = f"HOP {hop_num}/{route.hops}" if route.hops_list and route.hops > 1 else ""
+        hop_info = t("bar.hop", n=hop_num, total=route.hops) if route.hops_list and route.hops > 1 else ""
         steps = getattr(route, '_checklist_text', '')
 
         # Dane do wyświetlenia — AKTUALNY hop, nie zawsze hop 1 (bug: route.buy_item
@@ -212,12 +213,12 @@ class TradeOverlay:
 
         extras = []
         if route.jumps > 0:
-            extras.append(f"{route.jumps} SKOKI")
+            extras.append(t("bar.jumps", n=route.jumps, word=plural(route.jumps, "n.jumps")))
         if getattr(route, '_market_freshness_ts', None):
             import time
             elapsed = int(time.time() - route._market_freshness_ts)
-            extras.append(f"{elapsed}s temu" if elapsed < 60 else
-                          f"{elapsed // 60}m temu" if elapsed < 3600 else f"{elapsed // 3600}h temu")
+            extras.append(t("bar.ago_s", n=elapsed) if elapsed < 60 else
+                          t("bar.ago_m", n=elapsed // 60) if elapsed < 3600 else t("bar.ago_h", n=elapsed // 3600))
         if getattr(route, '_scoopable', False):
             extras.append("⛽")
 
@@ -230,17 +231,17 @@ class TradeOverlay:
                            and i.get('Count', 0) > 0 and i.get('Name', '').lower() != 'drones'
                            and not i.get('MissionID')]
             if other_items:
-                extras.append(f"[MASZ: {', '.join(other_items)}]")
+                extras.append(t("bar.you_have", items=", ".join(other_items)))
 
         self.dest_label.config(text=f"{display_dest_system} · {display_dest_station}".upper())
         route_text = (f"{display_item} ×{display_qty}  {display_buy:,} → {display_sell:,} CR"
-                      f"  ·  ZYSK {route.total_profit:,} CR")
+                      f"  ·  {t('bar.profit', profit=f'{route.total_profit:,}')}")
         if extras:
             route_text += "  ·  " + "  ".join(extras)
         self.route_label.config(text=route_text.upper(), fg=tce.GREEN if route.total_profit > 0 else tce.RED)
-        self.steps_label.config(text="  ".join(t for t in (hop_info, steps.upper()) if t))
-        finished = "ukończona" in steps
-        self.status_label.config(text="TRASA UKOŃCZONA" if finished else "TRASA AKTYWNA", fg=tce.GREEN)
+        self.steps_label.config(text="  ".join(part for part in (hop_info, steps.upper()) if part))
+        finished = getattr(route, "_finished", False)
+        self.status_label.config(text=t("bar.route_done") if finished else t("bar.route_active"), fg=tce.GREEN)
 
     def set_polling_status(self, elapsed: int) -> None:
         """Aktualizuj status w czasie pollingu Spansh — thread-safe."""
@@ -256,7 +257,8 @@ class TradeOverlay:
 
     def _set_polling_status_inner(self, elapsed: int) -> None:
         """Wywoływane z mainloop — aktualizuje status bez zmiany current_route."""
-        self.status_label.config(text=f"LICZĘ TRASĘ… {elapsed}s", fg=tce.ORANGE)
+        self.status_label.config(text=t("bar.calculating", n=elapsed), fg=tce.ORANGE)
+
 
     def set_system_info(self, text: str) -> None:
         """Ustaw info o systemie/stacjach — thread-safe. Rejestruje też jako strona rotacji."""
