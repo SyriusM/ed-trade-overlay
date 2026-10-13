@@ -140,8 +140,8 @@ class TradeOverlay:
                                bg=tce.ORANGE, padx=30)
         self.header.pack(side=tk.TOP)
         self.status_label = tk.Label(center, text="OCZEKIWANIE NA DOKOWANIE", font=self.font_title,
-                                     fg=tce.ORANGE_DIM, bg=tce.BG)
-        self.status_label.pack(side=tk.TOP, pady=(2, 0))
+                                     fg=tce.ORANGE_DIM, bg=tce.BG, width=1)
+        self.status_label.pack(side=tk.TOP, pady=(2, 0), fill=tk.X)
         self.steps_label = tk.Label(center, width=1, text="", font=self.font_info, fg=tce.ORANGE, bg=tce.BG)
         self.steps_label.pack(side=tk.TOP, fill=tk.X)
 
@@ -225,7 +225,7 @@ class TradeOverlay:
 
         if self.current_route is None:
             self._hide_content()
-            self.status_label.config(text="OCZEKIWANIE NA DOKOWANIE", fg=tce.ORANGE_DIM)
+            self._set_fit(self.status_label, "OCZEKIWANIE NA DOKOWANIE", fg=tce.ORANGE_DIM)
             return
 
         route = self.current_route
@@ -236,7 +236,7 @@ class TradeOverlay:
         if route.error:
             self._hide_content()
             self._set_fit(self.route_label, f"BŁĄD: {route.error}".upper(), fg=tce.RED)
-            self.status_label.config(text="BŁĄD TRASY", fg=tce.RED)
+            self._set_fit(self.status_label, "BŁĄD TRASY", fg=tce.RED)
             return
 
         # Pojedynczy wiersz trasy — wyśrodkowany
@@ -279,7 +279,8 @@ class TradeOverlay:
             meta_color = tce.verdict_color(verdict, shade)
         if getattr(route, '_scoopable', False):
             meta.append("⛽")
-        if self._copied_system and self._copied_system.lower() == (display_dest_system or "").lower():
+        if self._copied_system and self._copied_system.lower() in ((display_dest_system or "").lower(),
+                                                                   (display_dest_station or "").lower()):
             meta.append("✓ W SCHOWKU")
 
         # Cargo awareness — ostrzeżenie jeśli w ładowni jest coś innego niż towar hopu
@@ -303,7 +304,15 @@ class TradeOverlay:
         self._set_fit(self.route_label, route_text.upper(), fg=tce.GREEN if route.total_profit > 0 else tce.RED)
         self._set_fit(self.steps_label, "  ".join(t for t in (hop_info, steps.upper()) if t))
         finished = "ukończona" in steps
-        self.status_label.config(text="TRASA UKOŃCZONA" if finished else "TRASA AKTYWNA", fg=tce.GREEN)
+        check = getattr(route, '_live_check', None)
+        if finished:
+            self._set_fit(self.status_label, "TRASA UKOŃCZONA", fg=tce.GREEN)
+        elif check is not None and check.hop_index == hop_num - 1:
+            # Weryfikacja cenami z gry (Market.json po otwarciu rynku): ✓ / ⚠ / ✗
+            color = {"ok": tce.GREEN, "warn": tce.VERDICT_COLORS["hold"], "gone": tce.RED}[check.level]
+            self._set_fit(self.status_label, check.text, fg=color)
+        else:
+            self._set_fit(self.status_label, "TRASA AKTYWNA", fg=tce.GREEN)
 
     def set_polling_status(self, elapsed: int) -> None:
         """Aktualizuj status w czasie pollingu Spansh — thread-safe."""
@@ -319,7 +328,7 @@ class TradeOverlay:
 
     def _set_polling_status_inner(self, elapsed: int) -> None:
         """Wywoływane z mainloop — aktualizuje status bez zmiany current_route."""
-        self.status_label.config(text=f"LICZĘ TRASĘ… {elapsed}s", fg=tce.ORANGE)
+        self._set_fit(self.status_label, f"LICZĘ TRASĘ… {elapsed}s", fg=tce.ORANGE)
 
     def set_system_info(self, text: str) -> None:
         """Ustaw info o systemie/stacjach — thread-safe. Rejestruje też jako strona rotacji."""

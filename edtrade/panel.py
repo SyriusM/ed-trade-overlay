@@ -43,6 +43,7 @@ PAGE_HINTS = {
 }
 PAD_FILTER_LABELS = {'auto': 'Automatycznie (ze statku)', 'large': 'Tylko pad L', 'all': 'Wszystkie pady'}
 MARKET_TYPE_LABELS = {'all': 'Wszystkie', 'space': 'Tylko kosmiczne', 'planetary': 'Tylko planetarne'}
+COPY_TARGET_LABELS = {'station': 'nazwę stacji', 'system': 'nazwę systemu', 'both': 'stację i system'}
 PANEL_TITLE = 'ED Trade Panel'
 
 
@@ -451,9 +452,15 @@ class TradePanel:
         options_line = ttk.Frame(self.settings_frame)
         options_line.grid(row=5, column=1, sticky='w', pady=4)
         ttk.Checkbutton(options_line, text='Pasek tylko gdy gra ma fokus', variable=self.bar_only_var).pack(side=tk.LEFT, padx=(0, 16))
-        ttk.Checkbutton(options_line, text='Kopiuj system celu do schowka po zmianie trasy', variable=self.auto_copy_var,
+        ttk.Checkbutton(options_line, text='Po zmianie trasy kopiuj do schowka:', variable=self.auto_copy_var,
                         command=lambda: self.user_config.__setitem__('auto_copy_system', bool(self.auto_copy_var.get()))
                         ).pack(side=tk.LEFT)
+        self.copy_target_var = tk.StringVar(value=COPY_TARGET_LABELS.get(self.user_config.get('copy_target', 'station'),
+                                                                          COPY_TARGET_LABELS['station']))
+        copy_combo = ttk.Combobox(options_line, textvariable=self.copy_target_var, values=list(COPY_TARGET_LABELS.values()),
+                                  state='readonly', width=18)
+        copy_combo.pack(side=tk.LEFT, padx=(6, 0))
+        copy_combo.bind('<<ComboboxSelected>>', lambda _e: self.user_config.__setitem__('copy_target', self._copy_target_key()))
 
         self.pad_filter_var = tk.StringVar(value=PAD_FILTER_LABELS.get(self.user_config.get('pad_filter', 'auto'),
                                                                         PAD_FILTER_LABELS['auto']))
@@ -530,6 +537,9 @@ class TradePanel:
             self.nav.select_frame(start_page)
         self._bind_all_row_actions()
         self.window.bind('<Configure>', self._schedule_layout_save, add='+')
+
+    def _copy_target_key(self) -> str:
+        return next((k for k, v in COPY_TARGET_LABELS.items() if v == self.copy_target_var.get()), 'station')
 
     def _verdict_display_changed(self) -> None:
         """Podgląd na żywo: tabele OKOLICY, linia SWOT i pasek w grze (bez sieci — z zapamiętanych danych)."""
@@ -642,7 +652,7 @@ class TradePanel:
         """Nazwa systemu do schowka — w grze: mapa galaktyki → pole wyszukiwania → Ctrl+V."""
         self.window.clipboard_clear()
         self.window.clipboard_append(system)
-        self.toast(f'Skopiowano „{system}” — wklej w mapie galaktyki (Ctrl+V)')
+        self.toast(f'Skopiowano „{system}” — wklej w wyszukiwarce mapy galaktyki (Ctrl+V)')
 
     def show_market_of(self, system: str, station: str) -> None:
         self.market_system_var.set(system)
@@ -1600,6 +1610,7 @@ class TradePanel:
             'min_profit_per_t': min_profit,
             'max_data_age_days': max_age,
             'auto_copy_system': bool(self.auto_copy_var.get()),
+            'copy_target': self._copy_target_key(),
             'verdict_icons': bool(self.verdict_icons_var.get()),
             'verdict_labels': bool(self.verdict_labels_var.get()),
         })

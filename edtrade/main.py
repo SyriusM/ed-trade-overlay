@@ -15,12 +15,14 @@ from pathlib import Path
 
 from .watcher import JournalWatcher
 from .filters import filter_from_config
-from .trade import market_from_market_json
+from .trade import market_from_market_json, nearby_candidates_from_market, rank_trades, Hop, TradeRoute
 from .trade import (TradeEngine, ship_needs_large_pad, get_system_info, search_stations, find_material_traders,
                     find_mining_hotspots, find_mineral_buyers)
 from .overlay import TradeOverlay, compact_cr
 from .session import SessionLedger
-from . import assess
+from . import assess, verify
+from datetime import datetime
+import threading
 from .panel import TradePanel
 from .window_watch import get_active_window
 from . import market_cache
@@ -108,6 +110,15 @@ def parse_args():
     return parser.parse_args()
 
 
+def copy_text(system: str, station: str, mode: str) -> str:
+    """Tekst do schowka: 'station' → stacja, 'system' → system, 'both' → "Stacja (System)". Bez stacji → system."""
+    if not station or mode == 'system':
+        return system
+    if mode == 'both' and system:
+        return f"{station} ({system})"
+    return station
+
+
 class EDTradeOverlayApp:
     """Główna aplikacja — integruje watcher, engine i overlay."""
 
@@ -161,6 +172,7 @@ class EDTradeOverlayApp:
         self._ship_large_pad = False
         self.session = SessionLedger()
         self._copied_system = ""
+        self._live_market = None
 
         # Podłącz callback pollingu do overlaya
         if self.overlay:
@@ -253,20 +265,28 @@ class EDTradeOverlayApp:
             self.panel.show_route(route)
         self._copied_system = ""  # nowa trasa → skopiuj cel nawet, jeśli to ten sam system
         self._copy_target(route)
+        if not getattr(route, '_live_check', None):
+            self._verify_live()  # rynek na żywo mógł przyjść przed końcem liczenia Spansh
 
-    def _current_target(self, route) -> str:
-        """System, do którego trzeba teraz lecieć: cel bieżącego hopu (checklista), inaczej cel trasy."""
+    def _current_target(self, route) -> tuple[str, str]:
+        """(system, stacja), do których trzeba teraz lecieć: cel bieżącego hopu (checklista), inaczej cel trasy."""
         if route is None or route.error:
-            return ""
+            return "", ""
         if self.checklist is not None and self.checklist.route is route:
-            return "" if self.checklist.finished else self.checklist.hop.destination_system
-        return route.destination_system
+            if self.checklist.finished:
+                return "", ""
+            return self.checklist.hop.destination_system, self.checklist.hop.destination_station
+        return route.destination_system, route.destination_station
 
     def _copy_target(self, route) -> None:
-        """Trasa zaktualizowana → system celu do schowka (w grze: mapa galaktyki → Ctrl+V)."""
+        """Trasa zaktualizowana → cel do schowka (w grze: mapa galaktyki → wyszukiwanie → Ctrl+V).
+
+        Co kopiować (stacja / system / oba) wybiera się w Ustawieniach — domyślnie stacja.
+        """
         if self.overlay is None or not self.user_config.get('auto_copy_system', True):
             return
-        target = self._current_target(route)
+        system, station = self._current_target(route)
+        target = copy_text(system, station, self.user_config.get('copy_target', 'station'))
         if not target or target == self._copied_system:
             return
         self._copied_system = target
@@ -274,7 +294,7 @@ class EDTradeOverlayApp:
 
     def _copy_now(self, target: str) -> None:
         if self.panel is not None:
-            self.panel.copy_system(target)  # + komunikat w panelu
+            self.panel.copy_system(target)  # + komunikat w panelu (system albo stacja)
         else:
             self.overlay.master.clipboard_clear()
             self.overlay.master.clipboard_append(target)
@@ -445,9 +465,7 @@ class EDTradeOverlayApp:
             )
         except Exception:
             logger.exception("Błąd w _on_market")
-        if self.panel is None:
-            return
-        # Ceny na żywo z gry dla bieżącej stacji — panel używa ich zamiast API (wiek 0)
+        # Ceny na żywo z gry dla bieżącej stacji: weryfikacja trasy + panel (zamiast API, wiek 0)
         try:
             data = market_cache._load_market_json(self.watcher.journal_dir / "Market.json")
             if data and data.get("MarketID") == event.get("MarketID"):
@@ -456,9 +474,77 @@ class EDTradeOverlayApp:
                 live = market_from_market_json(data, self._commodity_ids)
                 logger.info("Rynek na żywo: %s/%s — %d eksport, %d import", live.system_name, live.station_name,
                             len(live.exports), len(live.imports))
-                self.panel.update_context(live_market=live)
+                self._live_market = live
+                if self.panel is not None:
+                    self.panel.update_context(live_market=live)
+                self._verify_live()
         except Exception:
             logger.exception("Błąd odczytu Market.json (rynek na żywo)")
+
+    def _verify_live(self) -> None:
+        """Bieżący hop vs ceny z gry: na stacji kupna (przed zakupem) i w celu (przed sprzedażą).
+
+        Towaru nie ma / nieopłacalny → od razu nowa trasa z cen na żywo (Spansh i tak ma stare dane).
+        """
+        live, checklist = self._live_market, self.checklist
+        if live is None or checklist is None or checklist.finished:
+            return
+        hop = checklist.hop
+        here = (live.system_name.lower(), live.station_name.lower())
+        if not self._commodity_names:
+            self._commodity_names = load_commodity_names()
+        old_profit = hop.profit
+        if here == (hop.source_system.lower(), hop.source_station.lower()) and checklist.bought < (hop.amount or 1):
+            check = verify.check_buy(hop, live, self._commodity_names, checklist.hop_index)
+        elif here == (hop.destination_system.lower(), hop.destination_station.lower()) and checklist.bought:
+            check = verify.check_sell(hop, live, self._commodity_names, checklist.hop_index)
+        else:
+            return
+        route = checklist.route
+        route.total_profit += hop.profit - old_profit  # tylko różnica na tym hopie (inne hopy bez zmian)
+        route._live_check = check
+        checklist._sync_route()
+        logger.info("Weryfikacja na żywo (hop %d, %s): %s", checklist.hop_index + 1, check.phase, check.text)
+        if self.overlay:
+            self.overlay._refresh_now()
+        if self.panel is not None:
+            self.panel.show_route(route)
+        if check.level == verify.GONE:
+            threading.Thread(target=self._replan_from_live, args=(live, check), daemon=True).start()
+
+    def _replan_from_live(self, live, check) -> None:
+        """Nowa trasa 1-hop z rynku na żywo: najlepszy cr/h wg filtrów (zamiast nieaktualnego hopu)."""
+        try:
+            capacity = int(self._last_capacity or self.trade_engine.capacity or 0)
+            cands = nearby_candidates_from_market(live, capacity, self._apply_market_filter(),
+                                                  jump_range=float(self.trade_engine.ly_per or 30.0))
+            best = rank_trades(cands, "per_hour")
+        except Exception:
+            logger.exception("Nowa trasa z rynku na żywo")
+            return
+        if not best:
+            logger.info("Brak alternatywy z rynku na żywo — zostaje komunikat: %s", check.text)
+            return
+        t = best[0]
+        name = self._commodity_names.get(t.commodity.lower(), t.commodity)
+        dst_epoch = 0.0
+        try:
+            dst_epoch = datetime.fromisoformat(t.updated_at.replace("Z", "+00:00")).timestamp()
+        except (ValueError, AttributeError):
+            pass
+        hop = Hop(live.system_name, live.station_name, t.sell_system, t.sell_station, name, t.units, t.buy_price,
+                  t.sell_price, t.total_profit, t.distance, time.time(), dst_epoch)
+        route = TradeRoute(source_system=live.system_name, source_station=live.station_name,
+                           destination_system=t.sell_system, destination_station=t.sell_station, buy_item=name,
+                           buy_quantity=t.units, buy_price=t.buy_price, sell_price=t.sell_price,
+                           profit_per_unit=t.profit_per_unit, total_profit=t.total_profit, cargo_used=t.units,
+                           hops=1, hops_list=[hop])
+        logger.info("Nowa trasa z rynku na żywo: %s %s → %s/%s (%s cr)", name, t.units, t.sell_system,
+                    t.sell_station, f"{t.total_profit:,}")
+        self._publish_route(route, live.system_name, live.station_name)
+        route._live_check = verify.LiveCheck(verify.OK, f"↻ ZAMIAST: {name.upper()} (CENY NA ŻYWO)", verify.BUY, 0)
+        if self.overlay:
+            self.overlay._refresh_now()
 
     def _on_materials(self, event: dict):
         """Reaguje na event Materials (start gry) — stan materiałów do zakładki Inżynieria."""

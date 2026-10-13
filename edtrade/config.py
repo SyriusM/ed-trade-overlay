@@ -36,7 +36,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     'panel_page': 'Trasa',
     'verdict_icons': True,    # ocena okazji: ikonki (= ≈ ▲ ▲▲ ▼ ▼▼)
     'verdict_labels': True,   # ocena okazji: opis (OPTIMAL, VERY SAFE…)
-    'auto_copy_system': True, # nowa trasa / następny hop → system celu do schowka
+    'auto_copy_system': True, # nowa trasa / następny hop → cel do schowka
+    'copy_target': 'station', # co kopiować: 'station', 'system' albo 'both' ("Stacja (System)")
 }
 
 
