@@ -279,12 +279,12 @@ class EDTradeOverlayApp:
             if system_id64:
                 sys_info = get_system_info(system_id64)
                 if sys_info.name:
-                    info_parts.append(f'{sys_info.name} | {sys_info.allegiance} | sec:{sys_info.security}')
+                    info_parts.append(f'{sys_info.allegiance} | sec:{sys_info.security}')
             stations = search_stations(system)
             if stations:
                 info_parts.append(f'{len(stations)} stacji')
-            if info_parts and self.overlay:
-                self.overlay.set_system_info(' | '.join(info_parts))
+            if self.overlay:
+                self.overlay.set_system_info(f'{system} · {station}\n' + ' | '.join(info_parts))
         except Exception:
             logger.exception('Błąd automatu stacje/system przy Docked')
 
