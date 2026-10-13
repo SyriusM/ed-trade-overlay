@@ -31,6 +31,25 @@ def parse_commodity_names(*csv_texts: str) -> dict[str, str]:
     return names
 
 
+def parse_commodity_ids(*csv_texts: str) -> dict[int, str]:
+    """FDevIDs → {id towaru z Market.json: symbol lowercase} (symbole = nazwy towarów w Ardent)."""
+    ids = {}
+    for text in csv_texts:
+        for row in csv.DictReader(io.StringIO(text or "")):
+            try:
+                ids[int(row.get("id") or 0)] = (row.get("symbol") or "").strip().lower()
+            except ValueError:
+                continue
+    ids.pop(0, None)
+    return ids
+
+
+def load_commodity_ids(cache_dir: Optional[Path] = None) -> dict[int, str]:
+    texts = [fetch_cached(url, fn, cache_dir) for url, fn in
+             ((FDEVIDS_COMMODITY_URL, "commodity.csv"), (FDEVIDS_RARE_URL, "rare_commodity.csv"))]
+    return parse_commodity_ids(*(t for t in texts if t))
+
+
 def load_commodity_names(cache_dir: Optional[Path] = None) -> dict[str, str]:
     texts = [fetch_cached(url, fn, cache_dir) for url, fn in
              ((FDEVIDS_COMMODITY_URL, "commodity.csv"), (FDEVIDS_RARE_URL, "rare_commodity.csv"))]
@@ -69,6 +88,8 @@ class RouteChecklist:
         self.docked = (docked[0].lower(), docked[1].lower())
         self.hop_index = 0
         self.finished = not self.hops
+        self.last_buy_ts: Optional[datetime] = None
+        self._trip: Optional[tuple] = None  # (hop, zakup, dokowanie w celu) — do kalibracji tempa
         self._reset_steps()
         # Zakup często dzieje się, zanim Spansh policzy trasę (40-180 s) — startowy stan z ładowni
         if self.hop and cargo:
@@ -76,6 +97,7 @@ class RouteChecklist:
         self._sync_route()
 
     def _reset_steps(self) -> None:
+        self.last_buy_ts = None
         self.bought = 0
         self.arrived = False
         self.sold = 0
@@ -122,10 +144,13 @@ class RouteChecklist:
             self.docked = (ev.get("StarSystem", "").lower(), ev.get("StationName", "").lower())
             if self.at_destination() and not self.arrived:
                 self.arrived = True
+                if self.last_buy_ts is not None and ts is not None:
+                    self._trip = (self.hop, self.last_buy_ts, ts)
                 return True
             return False
         if event == "MarketBuy" and self._matches(ev.get("Type", "")):
             self.bought += int(ev.get("Count") or 0)
+            self.last_buy_ts = ts
             return True
         if event == "MarketSell" and self._matches(ev.get("Type", "")) and self.at_destination():
             self.arrived = True
@@ -134,6 +159,11 @@ class RouteChecklist:
                 self._advance()
             return True
         return False
+
+    def pop_trip(self) -> Optional[tuple]:
+        """Zakończony lot hopu (hop, czas zakupu, czas dokowania w celu) — raz, potem None."""
+        trip, self._trip = self._trip, None
+        return trip
 
     def _advance(self) -> None:
         self.hop_index += 1

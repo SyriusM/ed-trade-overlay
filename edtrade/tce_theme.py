@@ -20,6 +20,40 @@ GREEN = "#4cff4c"
 RED = "#ff3b30"
 BLUE = "#5ab4ff"
 
+# Werdykty oceny okazji (edtrade/assess.py): każda klasa ma gradient (start → koniec), shade 0–1 wybiera kolor.
+# OPTIMAL limonka → oliwka (NOT OPTIMAL); SAFE zielony → ciemnozielony (VERY SAFE); RISKY czerwony (wysoki zysk)
+# → ciemnoczerwony (VERY RISKY: okazji pewnie już nie ma); HOLD żółty → bursztynowy.
+LIME = "#b8ff2e"
+VERDICT_GRADIENTS = {
+    "optimal": (LIME, "#8fa82a"),  # limonka → oliwka (NOT OPTIMAL)
+    "safe": ("#4cff4c", "#1e9a32"),
+    "risky": ("#ff3b30", "#b01a1a"),
+    "hold": ("#ffd23f", "#d08a00"),
+}
+VERDICT_COLORS = {k: v[0] for k, v in VERDICT_GRADIENTS.items()}
+VERDICT_LEVELS = 6
+
+
+def _mix(c1: str, c2: str, t: float) -> str:
+    a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{round(x + (y - x) * t):02x}" for x, y in zip(a, b))
+
+
+def _level(shade: float) -> int:
+    return min(VERDICT_LEVELS - 1, int(max(0.0, min(1.0, shade)) * VERDICT_LEVELS))
+
+
+def verdict_color(verdict: str, shade: float) -> str:
+    """Kolor z gradientu klasy (skwantowany do VERDICT_LEVELS, tak jak tagi tabel)."""
+    start, end = VERDICT_GRADIENTS[verdict]
+    return _mix(start, end, _level(shade) / (VERDICT_LEVELS - 1))
+
+
+def verdict_tag(verdict: str, shade: float) -> str:
+    return f"v_{verdict}_{_level(shade)}"
+
+
 # Pierwsza dostępna — TCE używa wąskiego, "technicznego" kroju
 FONT_CANDIDATES = (
     "Eurostile", "Euro Caps", "Michroma", "Orbitron", "Rajdhani", "Saira Semi Condensed",
@@ -223,7 +257,12 @@ class DataTable(tk.Frame):
         self.tree.tag_configure("dim", foreground=ORANGE_DIM)
         self.tree.tag_configure("good", foreground=GREEN)
         self.tree.tag_configure("bad", foreground=RED)
+        for verdict in VERDICT_GRADIENTS:
+            for level in range(VERDICT_LEVELS):
+                self.tree.tag_configure(f"v_{verdict}_{level}",
+                                        foreground=verdict_color(verdict, (level + 0.5) / VERDICT_LEVELS))
         self._sort_values: dict[str, dict] = {}
+        self._payloads: dict = {}
 
     def _fit_columns(self, event: tk.Event) -> None:
         total = sum(self._base_widths.values())
@@ -231,15 +270,28 @@ class DataTable(tk.Frame):
             self.tree.column(key, width=max(20, int(width * event.width / total)))
 
     def set_rows(self, rows: Sequence[Sequence], sort_values: Optional[Sequence[dict]] = None,
-                 tags: Optional[Sequence[str]] = None) -> None:
-        """rows: wartości wyświetlane; sort_values: opcjonalne surowe wartości do sortowania (klucz kolumny → liczba)."""
+                 tags: Optional[Sequence[str]] = None, payloads: Optional[Sequence] = None) -> None:
+        """rows: wartości wyświetlane; sort_values: surowe wartości do sortowania; payloads: obiekt za wierszem."""
         self.tree.delete(*self.tree.get_children())
         self._sort_values = {}
+        self._payloads = {}
         for i, row in enumerate(rows):
             iid = self.tree.insert("", tk.END, values=[str(v).upper() for v in row],
                                    tags=(tags[i],) if tags and tags[i] else ())
             if sort_values:
                 self._sort_values[iid] = sort_values[i]
+            if payloads:
+                self._payloads[iid] = payloads[i]
+
+    def selected_payload(self):
+        selection = self.tree.selection()
+        return self._payloads.get(selection[0]) if selection else None
+
+    def on_activate(self, callback) -> None:
+        """Dwuklik / Enter na wierszu → callback(payload) — jak PREVIEW w Route Finder TCE."""
+        handler = lambda _e: (self.selected_payload() is not None) and callback(self.selected_payload())
+        self.tree.bind("<Double-1>", handler)
+        self.tree.bind("<Return>", handler)
 
     def rows(self) -> list[tuple]:
         return [tuple(self.tree.item(i, "values")) for i in self.tree.get_children()]
@@ -299,3 +351,62 @@ class NavBar(tk.Frame):
 
     def select_frame(self, frame: tk.Misc) -> None:
         self.segments.select(str(frame))
+
+
+class GroupedNavBar(tk.Frame):
+    """Nawigacja w dwóch poziomach: grupy wg celu (HANDEL / NAWIGACJA / …) i strony w grupie.
+
+    Zamiast jednego rzędu wszystkich stron (TCE ma płaskie menu, łatwo się zgubić).
+    """
+
+    def __init__(self, parent: tk.Misc, notebook: ttk.Notebook, fonts: Fonts,
+                 groups: Sequence[tuple[str, Sequence[tk.Misc]]], on_change: Optional[Callable[[str], None]] = None):
+        super().__init__(parent, bg=BG)
+        self.notebook = notebook
+        self._on_change = on_change
+        self._pages = {title: [str(f) for f in frames] for title, frames in groups}
+        self._group_of = {page: title for title, pages in self._pages.items() for page in pages}
+        self._last_page = {title: pages[0] for title, pages in self._pages.items()}
+        first = groups[0][0]
+        self.groups = SegmentedButtons(self, [(t, t) for t, _ in groups], fonts, command=self._select_group, initial=first)
+        self.groups.pack(fill=tk.X)
+        self._sub_holder = tk.Frame(self, bg=BG)
+        self._sub_holder.pack(fill=tk.X, pady=(4, 0))
+        self._subs: dict[str, SegmentedButtons] = {}
+        for title, pages in self._pages.items():
+            if len(pages) > 1:
+                self._subs[title] = SegmentedButtons(
+                    self._sub_holder, [(pid, notebook.tab(pid, "text")) for pid in pages], fonts,
+                    command=self._select_page, initial=pages[0])
+        self._show_group(first)
+        self._show(self._last_page[first])
+
+    def _show_group(self, title: str) -> None:
+        for name, sub in self._subs.items():
+            if name == title:
+                sub.pack(fill=tk.X, padx=(24, 0))
+            else:
+                sub.pack_forget()
+
+    def _select_group(self, title: str) -> None:
+        self._show_group(title)
+        self._show(self._last_page[title])
+
+    def _select_page(self, page_id: str) -> None:
+        self._last_page[self._group_of[page_id]] = page_id
+        self._show(page_id)
+
+    def _show(self, page_id: str) -> None:
+        self.notebook.select(page_id)
+        if self._on_change:
+            self._on_change(self.notebook.tab(page_id, "text"))
+
+    def select_frame(self, frame: tk.Misc) -> None:
+        page_id = str(frame)
+        title = self._group_of[page_id]
+        self.groups.select(title, notify=False)
+        self._show_group(title)
+        if title in self._subs:
+            self._subs[title].select(page_id, notify=False)
+        self._last_page[title] = page_id
+        self._show(page_id)
