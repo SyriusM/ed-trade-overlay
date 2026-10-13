@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 from .watcher import JournalWatcher
-from .trade import (TradeEngine, get_system_info, search_stations, find_material_traders,
+from .trade import (TradeEngine, ship_needs_large_pad, get_system_info, search_stations, find_material_traders,
                     find_mining_hotspots, find_mineral_buyers)
 from .overlay import TradeOverlay
 from .panel import TradePanel
@@ -174,9 +174,13 @@ class EDTradeOverlayApp:
             self.trade_engine.capacity = capacity
         if max_jump_range > 0:
             self.trade_engine.ly_per = max_jump_range
+        large_pad = ship_needs_large_pad(ship)
+        pad_changed = large_pad != self.trade_engine.requires_large_pad
+        self.trade_engine.requires_large_pad = large_pad
+        logger.info("Loadout: %s — trasy tylko przez stacje z padem L: %s", ship, large_pad)
 
-        # Sprawdź, czy capacity faktycznie się zmieniła
-        if capacity <= 0 or capacity == self._last_capacity:
+        # Przelicz, gdy zmieniła się pojemność albo wymagany pad (zmiana statku)
+        if capacity <= 0 or (capacity == self._last_capacity and not pad_changed):
             return
 
         # Sprawdź, czy użytkownik jest nadal w tej samej stacji

@@ -756,6 +756,17 @@ def search_stations(system_name: str) -> list[StationInfo]:
     return stations
 
 
+# Symbole statków z eventu Loadout ("Ship"), które mieszczą się tylko na padzie L
+LARGE_PAD_SHIPS = frozenset({
+    "anaconda", "belugaliner", "cutter", "federation_corvette", "imperial_clipper", "orca",
+    "panthermkii", "type7", "type9", "type9_military",
+})
+
+
+def ship_needs_large_pad(ship: str) -> bool:
+    return (ship or "").lower() in LARGE_PAD_SHIPS
+
+
 class TradeEngine:
     """Wywołuje Trade Dangerous i parsuje wynik."""
 
@@ -773,6 +784,7 @@ class TradeEngine:
         self.capacity = capacity
         self.credits = credits
         self.ly_per = ly_per
+        self.requires_large_pad = False
         self._last_result: Optional[TradeRoute] = None
         self._polling_callback: Optional[Callable[[int], None]] = None
 
@@ -962,6 +974,8 @@ class TradeEngine:
             "max_hop_distance": ly,
             "max_system_distance": ly,
         }
+        if self.requires_large_pad:
+            payload["requires_large_pad"] = "1"
 
         headers_form = {
             "User-Agent": "EdTradeOverlay/0.1",
