@@ -26,7 +26,7 @@ from .session import SessionLedger
 from .pilot import PilotCalibration
 from .price_db import PriceDB
 from .eddn import EDDNListener
-from . import assess, verify
+from . import assess, verify, clipboard
 from . import trade as trade_module
 from datetime import datetime, timezone
 from .bottom_bar import BottomBar
@@ -527,8 +527,7 @@ class EDTradeOverlayApp:
         if self.panel is not None:
             self.panel.copy_system(target)  # + komunikat w panelu (system albo stacja)
         else:
-            self.overlay.master.clipboard_clear()
-            self.overlay.master.clipboard_append(target)
+            clipboard.copy(target, self.overlay.master)
         self.overlay.mark_copied(target)
         logger.info("Schowek: %s", target)
 
