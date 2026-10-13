@@ -11,13 +11,30 @@ from pathlib import Path
 from tkinter import ttk
 from typing import Optional
 from .config import load_user_config, save_user_config
-from .trade import get_system_info, search_stations, find_material_traders, find_mining_hotspots, find_mineral_buyers, TradeEngine
+from datetime import datetime, timezone
+from .trade import get_system_info, search_stations, find_material_traders, find_mining_hotspots, find_mineral_buyers, find_commodity_sellers, TradeEngine
+
+COMMODITY_MODES = ('Kup', 'Sprzedaj')
+
+
+def _data_age(updated_at: str, now: Optional[datetime] = None) -> str:
+    """Wiek danych rynkowych jako krótki tekst ('3h', '2d'); '?' gdy brak/nieczytelne."""
+    try:
+        ts = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+    except (ValueError, AttributeError):
+        return '?'
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    hours = ((now or datetime.now(timezone.utc)) - ts).total_seconds() / 3600
+    if hours < 1:
+        return '<1h'
+    return f'{hours:.0f}h' if hours < 48 else f'{hours / 24:.0f}d'
 
 logger = logging.getLogger(__name__)
 
 
 class TradePanel:
-    """Osobne okno z zakładkami (Trasa/System/Materiały/Mining/Journey/Ustawienia)."""
+    """Osobne okno z zakładkami (System/Materiały/Mining/Towary/Journey/Ustawienia)."""
 
     def __init__(self, master: tk.Tk, user_config: Optional[dict] = None, config_path: Optional[Path] = None):
         self.master = master
@@ -87,6 +104,27 @@ class TradePanel:
         self.mining_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
         self.mining_text.insert('1.0', '(wybierz system i minerał, kliknij Odśwież)')
         self.mining_text.config(state=tk.DISABLED)
+
+        self.tab_commodity = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_commodity, text='Towary')
+
+        self.commodity_system_var = tk.StringVar(value='Sol')
+        self.commodity_name_var = tk.StringVar(value='Gold')
+        self.commodity_mode_var = tk.StringVar(value=COMMODITY_MODES[0])
+        self.commodity_entry_frame = ttk.Frame(self.tab_commodity)
+        self.commodity_entry_frame.pack(fill=tk.X, padx=10, pady=(10, 4))
+        ttk.Label(self.commodity_entry_frame, text='System:').pack(side=tk.LEFT)
+        ttk.Entry(self.commodity_entry_frame, textvariable=self.commodity_system_var, width=18).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(self.commodity_entry_frame, text='Towar:').pack(side=tk.LEFT)
+        ttk.Entry(self.commodity_entry_frame, textvariable=self.commodity_name_var, width=18).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Combobox(self.commodity_entry_frame, textvariable=self.commodity_mode_var, values=COMMODITY_MODES, width=9, state='readonly').pack(side=tk.LEFT, padx=(0, 10))
+        self.commodity_btn = ttk.Button(self.commodity_entry_frame, text='Szukaj', command=self.refresh_commodity_tab)
+        self.commodity_btn.pack(side=tk.LEFT)
+
+        self.commodity_text = tk.Text(self.tab_commodity, height=20, width=80, wrap=tk.WORD)
+        self.commodity_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
+        self.commodity_text.insert('1.0', '(wpisz system i towar, wybierz Kup/Sprzedaj, kliknij Szukaj)')
+        self.commodity_text.config(state=tk.DISABLED)
 
         self.tab_journey = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_journey, text='Journey')
@@ -275,6 +313,57 @@ class TradePanel:
         """Wywolywane w watku Tk: pokaz wynik i odblokuj przycisk."""
         self._set_mining_text(text)
         self.mining_btn.config(state=tk.NORMAL)
+
+    def _set_commodity_text(self, text: str) -> None:
+        self.commodity_text.config(state=tk.NORMAL)
+        self.commodity_text.delete('1.0', tk.END)
+        self.commodity_text.insert('1.0', text)
+        self.commodity_text.config(state=tk.DISABLED)
+
+    def refresh_commodity_tab(self) -> None:
+        """Waliduj w watku Tk i szukaj gdzie kupic/sprzedac towar w watku roboczym (UI nie zamarza)."""
+        system_name = self.commodity_system_var.get().strip()
+        commodity = self.commodity_name_var.get().strip()
+        mode = self.commodity_mode_var.get()
+        if not system_name or not commodity:
+            return
+        self.commodity_btn.config(state=tk.DISABLED)
+        self._set_commodity_text(f'{mode}: {commodity} | System: {system_name}\n\nSzukam...')
+        threading.Thread(target=self._commodity_worker, args=(system_name, commodity, mode), daemon=True).start()
+
+    def _commodity_worker(self, system_name: str, commodity: str, mode: str) -> None:
+        """Watek roboczy: NIE dotyka widgetow Tk — liczy i oddaje tekst przez after(0)."""
+        lines = [f'{mode}: {commodity} | System: {system_name}', '']
+        try:
+            if mode == 'Sprzedaj':
+                buyers = find_mineral_buyers(commodity, system_name, max_ly=60, size=15)
+                if buyers:
+                    lines.append(f'Gdzie sprzedać ({len(buyers)}), najdrożej najpierw:')
+                    for b in buyers:
+                        lines.append(f'  - {b.station_name} ({b.system_name}) {b.sell_price:,}cr, popyt {b.demand:,}, '
+                                     f'{b.distance:.1f} ly, pad {b.pad_size or "?"}, dane {_data_age(b.updated_at)}')
+                else:
+                    lines.append('Brak kupców w zasięgu (albo nieznana nazwa towaru).')
+            else:
+                sellers = find_commodity_sellers(commodity, system_name, max_ly=60, size=15)
+                if sellers:
+                    lines.append(f'Gdzie kupić ({len(sellers)}), najtaniej najpierw:')
+                    for s in sellers:
+                        lines.append(f'  - {s.station_name} ({s.system_name}) {s.buy_price:,}cr, zapas {s.stock:,}, '
+                                     f'{s.distance:.1f} ly, pad {s.pad_size or "?"}, dane {_data_age(s.updated_at)}')
+                else:
+                    lines.append('Brak sprzedawców w zasięgu (albo nieznana nazwa towaru).')
+        except Exception as e:
+            lines.append(f'Błąd wyszukiwania: {e}')
+        try:
+            self.window.after(0, self._commodity_done, '\n'.join(lines))
+        except Exception:
+            pass
+
+    def _commodity_done(self, text: str) -> None:
+        """Wywolywane w watku Tk: pokaz wynik i odblokuj przycisk."""
+        self._set_commodity_text(text)
+        self.commodity_btn.config(state=tk.NORMAL)
 
     def _set_journey_text(self, text: str) -> None:
         self.journey_text.config(state=tk.NORMAL)
