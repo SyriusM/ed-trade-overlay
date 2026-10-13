@@ -352,6 +352,15 @@ class EDTradeOverlayApp:
     def _on_cargo(self, event: dict):
         """Reaguje na event Cargo — przesyła listę towarów do overlaya."""
         self._cargo = event.get("Inventory") or []
+        if self.checklist is not None and self.checklist.on_cargo(self._cargo):
+            logger.info("Checklista: towaru hopu nie ma już w ładowni — hop %d/%d", self.checklist.hop_index + 1,
+                        len(self.checklist.hops))
+            if self.overlay:
+                self.overlay._refresh_now()
+            if self.panel is not None:
+                self.panel.show_route(self.checklist.route)
+            self._update_destination()
+            self._copy_target(self.checklist.route)
         if self.overlay:
             self.overlay.set_player_cargo(self._cargo)
         if self.panel is not None:

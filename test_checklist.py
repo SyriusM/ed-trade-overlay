@@ -74,14 +74,38 @@ class TestChecklist(unittest.TestCase):
         c.on_event(sell(12, "silver", 100))
         self.assertEqual(c.hop_index, 1)
 
-    def test_sale_elsewhere_and_other_commodity_ignored(self):
+    def test_other_commodity_and_wrong_port_ignored(self):
         c = self.new()
         c.on_event(buy(1, "silver", 304))
-        self.assertFalse(c.on_event(sell(2, "silver", 304)))           # wciąż w Sol, nie w celu
         self.assertFalse(c.on_event(buy(3, "biowaste", 10)))           # inny towar
         c.on_event(dock(10, "Barnard's Star", "Miller Depot"))          # zły port
         self.assertFalse(c.arrived)
         self.assertFalse(c.follows_plan("Barnard's Star", "Miller Depot"))
+
+    def test_sale_elsewhere_finishes_hop(self):
+        # Gracz sprzedał towar hopu gdzie indziej niż w planowanym celu — hop i tak zakończony (nie wisi)
+        c = self.new()
+        c.on_event(buy(1, "silver", 304))
+        self.assertTrue(c.on_event(sell(2, "silver", 304)))
+        self.assertEqual(c.hop_index, 1)
+
+    def test_no_double_count_when_route_created_right_after_buy(self):
+        # Zakup w tej samej sekundzie co utworzenie trasy: jest już w ładowni → MarketBuy nie liczy się drugi raz
+        c = self.new(cargo=[{"Name": "silver", "Count": 304}])
+        c.on_event(buy(0, "silver", 304))
+        self.assertEqual(c.bought, 304)
+        c.on_event(dock(10, "61 Cygni", "Broglie Terminal"))
+        c.on_event(sell(11, "silver", 304))
+        self.assertEqual(c.hop_index, 1)
+
+    def test_empty_hold_after_sale_advances(self):
+        c = self.new()
+        c.bought = 999  # licznik rozjechany
+        c.on_event(dock(10, "61 Cygni", "Broglie Terminal"))
+        c.on_event(sell(11, "silver", 100))
+        self.assertEqual(c.hop_index, 0)
+        self.assertTrue(c.on_cargo([{"Name": "drones", "Count": 7}]))
+        self.assertEqual(c.hop_index, 1)
 
     def test_history_before_route_ignored_and_cargo_counts(self):
         c = self.new(cargo=[{"Name": "silver", "Count": 304}, {"Name": "drones", "Count": 10}])
