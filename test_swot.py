@@ -198,5 +198,46 @@ class TestStrategies(unittest.TestCase):
         self.assertLess(factors["optimal"], 1.0)
 
 
+class TestCargoVerdict(unittest.TestCase):
+    def buyer(self, price, station="Far Port", demand=5000, age_h=1, distance=10.0):
+        from datetime import datetime, timezone
+        ts = datetime.fromtimestamp(NOW - age_h * H, timezone.utc).isoformat()
+        return NearbyTrade(commodity="gold", buy_price=0, stock=100, units=100, sell_station=station,
+                           sell_system="Achenar", sell_price=price, demand=demand, distance=distance, updated_at=ts)
+
+    def test_sell_here_when_no_better_buyer(self):
+        v = swot.cargo_verdict(100, 50000, [self.buyer(49000)], now=NOW)
+        self.assertEqual((v.level, v.arrow, v.tag), ("sell", "▲", "good"))
+        self.assertEqual(v.here_total, 5_000_000)
+
+    def test_hold_when_buyer_pays_more(self):
+        v = swot.cargo_verdict(100, 50000, [self.buyer(60000)], now=NOW)
+        self.assertEqual((v.level, v.arrow, v.tag), ("hold", "▼", "bad"))
+        self.assertEqual(v.gain_pct, 20)
+        self.assertIn("wieź dalej: +20% w Far Port", v.note)
+
+    def test_borderline_depends_on_strategy(self):
+        levels = {s: swot.cargo_verdict(100, 50000, [self.buyer(54000)], s, now=NOW).level
+                  for s in ("risky", "optimal", "safe")}
+        self.assertEqual(levels, {"risky": "hold", "optimal": "borderline", "safe": "sell"})
+
+    def test_stale_buyer_does_not_count(self):
+        v = swot.cargo_verdict(100, 50000, [self.buyer(90000, age_h=30)], "safe", now=NOW)
+        self.assertEqual(v.level, "sell")
+        v = swot.cargo_verdict(100, 50000, [self.buyer(90000, age_h=30)], "optimal", now=NOW)
+        self.assertEqual(v.level, "hold")
+
+    def test_not_bought_here(self):
+        v = swot.cargo_verdict(100, 0, [self.buyer(60000)], now=NOW)
+        self.assertEqual(v.level, "hold")
+        self.assertIn("tu nie kupują", v.note)
+        v = swot.cargo_verdict(100, 0, [], now=NOW)
+        self.assertEqual(v.level, "borderline")
+
+    def test_small_demand_limits_buyer_value(self):
+        v = swot.cargo_verdict(100, 50000, [self.buyer(80000, demand=10)], now=NOW)
+        self.assertEqual(v.level, "sell")
+
+
 if __name__ == "__main__":
     unittest.main()

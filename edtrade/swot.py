@@ -37,15 +37,16 @@ class Strategy:
     reject_low_security: bool
     max_jumps: int           # więcej skoków na hop = odrzucenie (0 = bez limitu)
     penalty: float           # o ile każda słabość/zagrożenie obniża pozycję w rankingu
+    hold_gain: float         # o ile więcej musi dać kupiec w okolicy, żeby nie sprzedawać ładunku tutaj
 
 
 STRATEGIES = {
     "risky": Strategy(stale_warn_h=24, stale_reject_h=240, low_fill=0.2, min_cover=0.0, reject_low_security=False,
-                      max_jumps=0, penalty=0.0),
+                      max_jumps=0, penalty=0.0, hold_gain=0.05),
     "optimal": Strategy(stale_warn_h=6, stale_reject_h=72, low_fill=0.5, min_cover=0.0, reject_low_security=False,
-                        max_jumps=0, penalty=0.05),
+                        max_jumps=0, penalty=0.05, hold_gain=0.10),
     "safe": Strategy(stale_warn_h=2, stale_reject_h=24, low_fill=0.5, min_cover=0.5, reject_low_security=True,
-                     max_jumps=2, penalty=0.15),
+                     max_jumps=2, penalty=0.15, hold_gain=0.25),
 }
 DEFAULT_STRATEGY = "optimal"
 STRATEGY_LABELS = {"risky": "Ryzykowna (max zysk)", "optimal": "Optymalna", "safe": "Bezpieczna (pewny handel)"}
@@ -77,6 +78,14 @@ LABELS = {
     "too_thin": "{what} {have}/{need} — za mało",
     "too_far": "{n} skoki — za daleko",
     "unsafe": "{value} — za ryzykownie",
+    "sell_here": "sprzedaj tutaj",
+    "sell_here_best": "tu najlepiej w okolicy",
+    "hold_for": "wieź dalej: +{pct}% w {station}",
+    "sell_at": "{station}: {price} cr",
+    "borderline": "na granicy: {station} +{pct}%",
+    "not_bought_here": "tu nie kupują",
+    "no_buyer": "brak kupca w zasięgu",
+    "no_price_here": "brak ceny tutaj",
 }
 
 LOW_SECURITY = {"anarchy": "anarchia", "lawless": "anarchia", "low": "niskie bezp."}
@@ -415,3 +424,64 @@ def screen_trades(trades: list, capacity: int, live: Optional[LiveMarket] = None
         if partners and capacity and trade.units < capacity:
             swots[id(trade)].opportunities.append("+ " + ", ".join(partners[:2]))
     return kept, swots
+
+
+SELL, HOLD, BORDERLINE = "sell", "hold", "borderline"
+ARROWS = {SELL: "▲", HOLD: "▼", BORDERLINE: "●"}
+TAGS = {SELL: "good", HOLD: "bad", BORDERLINE: "warn"}   # zielony / czerwony / bursztynowy w tabeli panelu
+
+
+@dataclass
+class CargoVerdict:
+    """Czy sprzedać towar z ładowni na tej stacji, czy wieźć dalej — wg SWOT i strategii."""
+    level: str = BORDERLINE
+    here_price: int = 0
+    here_total: int = 0
+    best: object = None          # NearbyTrade najlepszego kupca w okolicy (po odsianiu SWOT) albo None
+    best_total: int = 0
+    gain_pct: int = 0            # o ile % więcej da najlepszy kupiec niż sprzedaż tutaj
+    note: str = ""
+
+    @property
+    def arrow(self) -> str:
+        return ARROWS[self.level]
+
+    @property
+    def tag(self) -> str:
+        return TAGS[self.level]
+
+
+def cargo_verdict(count: int, here_price: int, candidates: list, strategy=DEFAULT_STRATEGY,
+                  now: Optional[float] = None, jump_range: float = 0.0, capacity: int = 0) -> CargoVerdict:
+    """▲ sprzedaj tutaj / ▼ trzymaj, bo w okolicy płacą wyraźnie więcej / ● na granicy (wg progu strategii).
+
+    candidates: NearbyTrade dla tego towaru z innych stacji (buy_price=0 — towar już w ładowni).
+    Kupcy odrzuceni przez SWOT (stare dane, za daleko dla strategii) nie liczą się jako lepsza oferta.
+    """
+    st = get_strategy(strategy)
+    kept, swots = screen_trades(candidates, capacity or count, now=now, strategy=st, jump_range=jump_range)
+    best = max(kept, key=lambda t: t.sell_price * min(count, t.demand or count) * swots[id(t)].rank_factor,
+               default=None)
+    v = CargoVerdict(here_price=here_price, here_total=here_price * count, best=best)
+    if best is not None:
+        v.best_total = best.sell_price * min(count, best.demand or count)
+    if here_price <= 0:
+        v.level = HOLD if best is not None else BORDERLINE
+        v.note = _t("not_bought_here") + " · " + (
+            _t("sell_at", station=best.sell_station, price=f"{best.sell_price:,}") if best else _t("no_buyer"))
+        return v
+    if best is None:
+        v.level, v.note = SELL, _t("sell_here")
+        return v
+    gain = v.best_total / v.here_total - 1 if v.here_total else 0.0
+    v.gain_pct = int(round(100 * gain))
+    if gain >= st.hold_gain:
+        v.level = HOLD
+        v.note = _t("hold_for", station=best.sell_station, price=f"{best.sell_price:,}", pct=v.gain_pct)
+    elif gain >= st.hold_gain / 2:
+        v.level = BORDERLINE
+        v.note = _t("borderline", station=best.sell_station, pct=v.gain_pct)
+    else:
+        v.level = SELL
+        v.note = _t("sell_here_best") if gain <= 0 else _t("sell_here")
+    return v

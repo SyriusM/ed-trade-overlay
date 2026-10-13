@@ -19,6 +19,7 @@ TEXT_ON_ORANGE = "#000000"
 GREEN = "#4cff4c"
 RED = "#ff3b30"
 BLUE = "#5ab4ff"
+AMBER = "#ffc400"
 
 # Pierwsza dostępna — TCE używa wąskiego, "technicznego" kroju
 FONT_CANDIDATES = (
@@ -217,6 +218,7 @@ class DataTable(tk.Frame):
         self.tree.tag_configure("dim", foreground=ORANGE_DIM)
         self.tree.tag_configure("good", foreground=GREEN)
         self.tree.tag_configure("bad", foreground=RED)
+        self.tree.tag_configure("warn", foreground=AMBER)
         self._sort_values: dict[str, dict] = {}
 
     def _fit_columns(self, event: tk.Event) -> None:

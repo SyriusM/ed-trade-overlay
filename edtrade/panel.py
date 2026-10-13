@@ -135,13 +135,14 @@ class TradePanel:
                          ('age', 'Dane', 55, 'e'), ('notes', 'Uwagi (SWOT)', 220, 'w')]
         self.nearby_table = tce.DataTable(self.tab_nearby, trade_columns, height=9)
         self.nearby_table.pack(fill=tk.BOTH, expand=True, padx=10, pady=(2, 6))
-        self.nearby_cargo_header = tce.SectionHeader(self.tab_nearby, 'Twój ładunek — gdzie sprzedać', self.fonts)
+        self.nearby_cargo_header = tce.SectionHeader(self.tab_nearby, 'Twój ładunek — sprzedać tutaj?', self.fonts)
         self.nearby_cargo_header.pack(fill=tk.X, padx=10, pady=(4, 2))
+        # ▲ zielona = sprzedaj tutaj, ▼ czerwona = trzymaj (lepszy kupiec obok), ● bursztynowa = na granicy (SWOT + strategia)
         self.nearby_cargo_table = tce.DataTable(self.tab_nearby, [
-            ('commodity', 'Towar', 160, 'w'), ('units', 'Ilość', 60, 'e'), ('station', 'Sprzedaj w', 170, 'w'),
-            ('system', 'System', 140, 'w'), ('sell', 'Cena', 70, 'e'), ('total', 'Razem', 100, 'e'),
-            ('time', 'Czas', 60, 'e'), ('per_h', 'CR/H', 100, 'e'), ('distance', 'Odl.', 60, 'e'),
-            ('arrival', 'LS', 60, 'e'), ('pad', 'Pad', 40, 'center'), ('age', 'Dane', 55, 'e')], height=4)
+            ('verdict', '', 30, 'center'), ('commodity', 'Towar', 150, 'w'), ('units', 'Ilość', 55, 'e'),
+            ('here', 'Cena tu', 75, 'e'), ('here_total', 'Razem tu', 100, 'e'), ('station', 'Lepiej w', 160, 'w'),
+            ('system', 'System', 130, 'w'), ('sell', 'Cena tam', 75, 'e'), ('gain', 'Różnica', 70, 'e'),
+            ('distance', 'Odl.', 55, 'e'), ('notes', 'Uwagi (SWOT)', 220, 'w')], height=5)
         self.nearby_cargo_table.pack(fill=tk.X, padx=10, pady=(2, 10))
 
         self.tab_system = ttk.Frame(self.notebook)
@@ -449,7 +450,7 @@ class TradePanel:
 
     def _context_changed(self, keys: set) -> None:
         self._render_context()
-        if 'cargo' in keys and hasattr(self, 'nearby_cargo_table'):
+        if keys & {'cargo', 'live_market'} and hasattr(self, 'nearby_cargo_table'):
             self.refresh_cargo_sales()
 
     def _market_filter(self):
@@ -815,6 +816,7 @@ class TradePanel:
         cargo = [c for c in ctx['cargo'] if int(c.get('Count') or 0) > 0 and c.get('Name', '').lower() != 'drones'
                  and not c.get('MissionID')]
         reference = ctx['system'] or self.nearby_system_var.get().strip()
+        here = (ctx['system'], ctx['station']) if ctx['system'] and ctx['station'] else ()
         if not cargo:
             self.nearby_cargo_table.set_rows([])
             self.nearby_cargo_header.set('Twój ładunek — gdzie sprzedać', 'ładownia pusta')
@@ -828,38 +830,75 @@ class TradePanel:
         except ValueError:
             max_ly = 40.0
         threading.Thread(target=self._cargo_worker, daemon=True,
-                         args=(cargo, reference, max_ly, self._market_filter(), self._jump_range())).start()
+                         args=(cargo, reference, here, max_ly, self._market_filter(), self._jump_range())).start()
 
-    def _cargo_worker(self, cargo: list, reference: str, max_ly: float, market_filter, jump_range: float) -> None:
-        cands, error, names = [], '', {}
+    def _cargo_worker(self, cargo: list, reference: str, here: tuple, max_ly: float, market_filter,
+                      jump_range: float) -> None:
+        cands, error, names, here_prices = [], '', {}, {}
         try:
             cands = cargo_candidates(cargo, reference, market_filter, max_ly, jump_range=jump_range)
+            here_prices = self._here_prices(here)
             names = load_commodity_names()
         except Exception as e:
             error = str(e)
         try:
-            self.window.after(0, self._cargo_done, reference, cargo, cands, names, error)
+            self.window.after(0, self._cargo_done, reference, here, cargo, cands, names, error, here_prices)
         except Exception:
             pass
 
-    def _cargo_done(self, reference: str, cargo: list, cands: list, names: dict, error: str) -> None:
+    def _here_prices(self, here: tuple) -> dict:
+        """Ceny sprzedaży na stacji, w której stoisz: żywy rynek (Market.json z tej wizyty), inaczej Ardent."""
+        if not here:
+            return {}
+        live = self.context().get('live_market')
+        if live is not None and live.is_at(*here):
+            return {key: item.sell_price for key, item in live.items.items()}
+        market = get_station_market(*here)
+        return {swot_mod.norm(i.name): i.sell_price for i in market.exports + market.imports if i.sell_price > 0}
+
+    def _cargo_done(self, reference: str, here: tuple, cargo: list, cands: list, names: dict, error: str,
+                    here_prices: dict) -> None:
         self._cargo_busy = False
         self._cargo_cands = cands
-        self._cargo_meta = (reference, cargo, names, error)
+        self._cargo_meta = (reference, here, cargo, names, error, here_prices)
         self._render_cargo()
 
     def _render_cargo(self) -> None:
+        """Każdy towar z ładowni: cena tutaj vs najlepszy kupiec w okolicy → strzałka sprzedaj/trzymaj wg strategii."""
         if self._cargo_meta is None:
             return
-        reference, cargo, names, error = self._cargo_meta
-        trades = rank_trades(self._cargo_cands, self.nearby_mode_var.get())
-        self.nearby_cargo_table.set_rows([self._trade_row(t, names, False) for t in trades],
-                                         sort_values=[self._trade_sort(t) for t in trades])
-        total = sum(t.total_profit for t in trades)
-        unsold = len(cargo) - len(trades)
-        right = f'razem {total:,} cr' + (f' · {unsold} bez kupca w zasięgu' if unsold else '')
-        self.nearby_cargo_header.set(f'Twój ładunek — gdzie sprzedać (wokół {reference})',
-                                     f'błąd: {error}' if error else right)
+        reference, here, cargo, names, error, here_prices = self._cargo_meta
+        strategy = self.user_config.get('trade_strategy', swot_mod.DEFAULT_STRATEGY)
+        by_name: dict = {}
+        for group in self._cargo_cands:
+            for t in group:
+                if here and t.sell_station.lower() == here[1].lower() and t.sell_system.lower() == here[0].lower():
+                    continue  # ta stacja to "cena tu", nie konkurencyjny kupiec
+                by_name.setdefault(t.commodity.lower(), []).append(t)
+        rows, tags, sorts, total_here = [], [], [], 0
+        for c in cargo:
+            symbol, count = c.get('Name', ''), int(c.get('Count') or 0)
+            name = c.get('Name_Localised') or names.get(symbol.lower(), symbol)
+            here_price = here_prices.get(swot_mod.norm(symbol)) or here_prices.get(swot_mod.norm(name)) or 0
+            v = swot_mod.cargo_verdict(count, here_price, by_name.get(symbol.lower(), []), strategy,
+                                       jump_range=self._jump_range())
+            b = v.best
+            show_best = b is not None and (v.level != swot_mod.SELL or v.gain_pct > 0)
+            rows.append((v.arrow, name, count, f'{here_price:,}' if here_price else '—',
+                         f'{v.here_total:,}' if here_price else '—',
+                         b.sell_station if show_best else '', b.sell_system if show_best else '',
+                         f'{b.sell_price:,}' if show_best else '',
+                         f'{v.gain_pct:+d}%' if show_best and here_price else '',
+                         f'{b.distance:.1f}' if show_best else '', v.note))
+            tags.append(v.tag)
+            sorts.append({'units': count, 'here': here_price, 'here_total': v.here_total, 'gain': v.gain_pct,
+                          'sell': b.sell_price if b else 0, 'distance': b.distance if b else 0})
+            if v.level == swot_mod.SELL:
+                total_here += v.here_total
+        self.nearby_cargo_table.set_rows(rows, sort_values=sorts, tags=tags)
+        where = f'{here[1]}' if here else reference
+        right = f'sprzedaj tu: {total_here:,} cr' if here else 'nie zadokowany — porównuję tylko okolicę'
+        self.nearby_cargo_header.set(f'Twój ładunek — sprzedać w {where}?', f'błąd: {error}' if error else right)
 
     def show_docked_station(self, system_name: str, station_name: str) -> None:
         """Wolane z watku watchera po Docked: przekaz do watku Tk przez after(0)."""

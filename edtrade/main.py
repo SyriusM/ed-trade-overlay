@@ -405,6 +405,8 @@ class EDTradeOverlayApp:
             )
         except Exception:
             logger.exception("Błąd w _on_market")
+        if self.panel is not None:  # świeże ceny tej stacji → tabela "sprzedać tutaj?" w panelu
+            self.panel.update_context(live_market=swot.load_live_market(self.watcher.journal_dir))
         self._recheck_route_on_market(event)
 
     def _recheck_route_on_market(self, event: dict) -> None:
