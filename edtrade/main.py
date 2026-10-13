@@ -240,7 +240,8 @@ class EDTradeOverlayApp:
         if self.panel is not None:
             self.panel.update_context(live_market=live)
         return swot.apply_to_route(route, int(self.trade_engine.capacity), live,
-                                   jump_range=self.trade_engine.ly_per, security=security)
+                                   jump_range=self.trade_engine.ly_per, security=security,
+                                   strategy=self.user_config.get('trade_strategy'))
 
     def _publish_route(self, route, system: str, station: str) -> None:
         """Nowa trasa → nowa checklista (kup → leć → sprzedaj) i wysłanie do overlaya."""

@@ -158,5 +158,45 @@ class TestNearbySwot(unittest.TestCase):
         self.assertIn("+ Silver", swots[id(kept[0])].opportunities)
 
 
+class TestStrategies(unittest.TestCase):
+    def test_default_is_optimal(self):
+        self.assertIs(swot.get_strategy(None), swot.STRATEGIES["optimal"])
+        self.assertIs(swot.get_strategy("bogus"), swot.STRATEGIES["optimal"])
+        from edtrade.config import DEFAULT_CONFIG
+        self.assertEqual(DEFAULT_CONFIG["trade_strategy"], "optimal")
+
+    def test_data_age_thresholds(self):
+        for strategy, age_h, rejected in (("risky", 100, False), ("optimal", 100, True), ("safe", 30, True),
+                                          ("optimal", 30, False)):
+            r = route(hop([("Gold", 256, 9000, 50000, 5000, 9000)], dst_age_h=age_h))
+            swot.apply_to_route(r, 256, None, now=NOW, strategy=strategy)
+            self.assertEqual(bool(r.error), rejected, (strategy, age_h))
+
+    def test_thin_supply_rejected_only_when_safe(self):
+        for strategy, rejected in (("risky", False), ("optimal", False), ("safe", True)):
+            r = route(hop([("Gold", 256, 9000, 50000, 100, 9000)]))
+            swot.apply_to_route(r, 256, None, now=NOW, strategy=strategy)
+            self.assertEqual(bool(r.error), rejected, strategy)
+        self.assertIn("podaż 100/256 — za mało", r.error)
+
+    def test_safe_rejects_anarchy_and_long_hops(self):
+        r = route(hop([("Gold", 256, 9000, 50000, 5000, 9000)]))
+        swot.apply_to_route(r, 256, None, now=NOW, strategy="safe", security="Anarchy")
+        self.assertIn("anarchia", r.error)
+        r = route(hop([("Gold", 256, 9000, 50000, 5000, 9000)], distance=70))
+        swot.apply_to_route(r, 256, None, now=NOW, strategy="safe", jump_range=30)
+        self.assertIn("za daleko", r.error)
+        r = route(hop([("Gold", 256, 9000, 50000, 5000, 9000)], distance=70))
+        swot.apply_to_route(r, 256, None, now=NOW, strategy="risky", jump_range=30, security="Anarchy")
+        self.assertEqual(r.error, "")
+
+    def test_rank_factor_weights(self):
+        t = NearbyTrade(commodity="Gold", buy_price=9000, stock=100, units=100, sell_station="A", sell_system="B",
+                        sell_price=20000, demand=5000, updated_at="")
+        factors = {s: swot.assess_trade(t, 256, now=NOW, strategy=s).rank_factor for s in ("risky", "optimal")}
+        self.assertEqual(factors["risky"], 1.0)
+        self.assertLess(factors["optimal"], 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

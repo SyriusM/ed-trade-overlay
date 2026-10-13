@@ -19,7 +19,7 @@ from .filters import filter_from_config
 from datetime import datetime, timezone
 from .trade import (get_system_info, search_stations, find_material_traders, find_mining_hotspots, find_mineral_buyers,
                     find_commodity_sellers, get_station_market, StationMarket, JourneyPlan, TradeEngine,
-                    nearby_candidates_from_market, cargo_candidates, rank_trades, RANK_MODES)
+                    nearby_candidates_from_market, cargo_candidates, rank_trades, RANK_MODES, _rank_key)
 
 COMMODITY_MODES = ('Kup', 'Sprzedaj')
 PAD_FILTER_LABELS = {'auto': 'Automatycznie (ze statku)', 'large': 'Tylko pad L', 'all': 'Wszystkie pady'}
@@ -392,6 +392,11 @@ class TradePanel:
         ttk.Label(self.settings_frame, text='Typ rynku:').grid(row=8, column=0, sticky='w', padx=(0, 8), pady=4)
         ttk.Combobox(self.settings_frame, textvariable=self.market_type_var, values=list(MARKET_TYPE_LABELS.values()),
                      state='readonly').grid(row=8, column=1, sticky='ew', pady=4)
+        self.strategy_var = tk.StringVar(value=swot_mod.STRATEGY_LABELS.get(
+            self.user_config.get('trade_strategy', swot_mod.DEFAULT_STRATEGY), swot_mod.STRATEGY_LABELS['optimal']))
+        ttk.Label(self.settings_frame, text='Strategia handlu:').grid(row=9, column=0, sticky='w', padx=(0, 8), pady=4)
+        ttk.Combobox(self.settings_frame, textvariable=self.strategy_var, values=list(swot_mod.STRATEGY_LABELS.values()),
+                     state='readonly').grid(row=9, column=1, sticky='ew', pady=4)
 
         self.bar_alpha_var = tk.DoubleVar(value=float(self.user_config.get('bar_alpha', 0.75)))
         self.bar_scale_var = tk.DoubleVar(value=float(self.user_config.get('bar_font_scale', 1.0)))
@@ -399,7 +404,7 @@ class TradePanel:
         for row, (title, var, lo, hi) in enumerate((
                 ('Przezroczystość paska:', self.bar_alpha_var, 0.3, 1.0),
                 ('Czcionka paska (skala):', self.bar_scale_var, 0.7, 1.8),
-                ('Czcionka panelu (skala):', self.panel_scale_var, 0.7, 1.8)), start=9):
+                ('Czcionka panelu (skala):', self.panel_scale_var, 0.7, 1.8)), start=10):
             ttk.Label(self.settings_frame, text=title).grid(row=row, column=0, sticky='w', padx=(0, 8), pady=4)
             line = ttk.Frame(self.settings_frame)
             line.grid(row=row, column=1, sticky='ew', pady=4)
@@ -410,10 +415,10 @@ class TradePanel:
                 side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
 
         self.save_settings_btn = ttk.Button(self.settings_frame, text='Zapisz', command=self.save_settings)
-        self.save_settings_btn.grid(row=12, column=1, sticky='w', pady=(10, 4))
+        self.save_settings_btn.grid(row=13, column=1, sticky='w', pady=(10, 4))
 
         self.settings_status_var = tk.StringVar(value='')
-        ttk.Label(self.settings_frame, textvariable=self.settings_status_var).grid(row=13, column=1, sticky='w', pady=4)
+        ttk.Label(self.settings_frame, textvariable=self.settings_status_var).grid(row=14, column=1, sticky='w', pady=4)
 
         tce.uppercase_static_texts(self.window)
         self._render_context()
@@ -780,13 +785,18 @@ class TradePanel:
             # SWOT przed rankingiem: kupcy z odrzuconym handlem (brak towaru, stare dane) nie wchodzą do wyboru
             hold_t = capacity or 304
             live = self.context().get('live_market')
-            screened = [swot_mod.screen_trades(c, hold_t, live, (system_name, station_name))[0]
-                        for c in self._nearby_cands]
+            strategy = self.user_config.get('trade_strategy', swot_mod.DEFAULT_STRATEGY)
+            screen = dict(live=live, live_station=(system_name, station_name), strategy=strategy,
+                          jump_range=self._jump_range())
+            screened = [swot_mod.screen_trades(c, hold_t, **screen)[0] for c in self._nearby_cands]
             dropped = sum(1 for c, k in zip(self._nearby_cands, screened) if c and not k)
             trades = rank_trades(screened, mode)
-            _, swots = swot_mod.screen_trades(trades, hold_t, live, (system_name, station_name))
+            _, swots = swot_mod.screen_trades(trades, hold_t, **screen)
+            if mode != 'time':  # wagi strategii: każda słabość/zagrożenie obniża wynik (risky — bez kary)
+                trades.sort(key=lambda t: _rank_key(mode)(t)[0] * swots[id(t)].rank_factor, reverse=True)
             self.nearby_table.set_rows([self._trade_row(t, names, True, swots[id(t)].short()) for t in trades],
                                        sort_values=[self._trade_sort(t) for t in trades])
+            filter_text += f' · strategia: {swot_mod.STRATEGY_LABELS.get(strategy, strategy).split(" (")[0].lower()}'
             if dropped:
                 filter_text += f' · odrzucone (SWOT): {dropped}'
             hold = f'ładownia {capacity} t' if capacity else 'ładownia 304 t (domyślnie — czekam na Loadout)'
@@ -1050,6 +1060,8 @@ class TradePanel:
             return
         pad_filter = next((k for k, v in PAD_FILTER_LABELS.items() if v == self.pad_filter_var.get()), 'auto')
         market_type = next((k for k, v in MARKET_TYPE_LABELS.items() if v == self.market_type_var.get()), 'all')
+        strategy = next((k for k, v in swot_mod.STRATEGY_LABELS.items() if v == self.strategy_var.get()),
+                        swot_mod.DEFAULT_STRATEGY)
 
         # Aktualizuj config in-place
         self.user_config.update({
@@ -1065,6 +1077,7 @@ class TradePanel:
             'pad_filter': pad_filter,
             'max_star_distance_ls': max_star,
             'market_type': market_type,
+            'trade_strategy': strategy,
         })
 
         # Zapisz do pliku
@@ -1072,6 +1085,7 @@ class TradePanel:
             save_user_config(self.user_config, self.config_path)
             self.settings_status_var.set('Zapisano.')
             self._render_context()
+            self._render_nearby()  # strategia SWOT działa od razu na liście okazji
         except Exception as e:
             self.settings_status_var.set(f'Błąd zapisu: {e}')
 

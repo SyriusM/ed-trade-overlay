@@ -4,6 +4,7 @@ Plik JSON w ~/.config/ed-trade-overlay/config.json. Puste pole ("") = automat wy
 Klucz game_window_class = klasa okna gry (kdotool), domyślnie appid Elite Dangerous — niezweryfikowana, odczytaj z logu "Aktywne okno: class=" gdy gra ma fokus.
 Klucz bar_only_when_game_focused = czy pasek ma być widoczny tylko, gdy okno gry ma fokus (domyślnie False, włączyć dopiero po zweryfikowaniu game_window_class).
 Klucze pad_filter (auto/large/all) / max_star_distance_ls (0 = bez limitu) / market_type (all/space/planetary) = filtry rynków (jak "Market minimum pad size" w TCE).
+Klucz trade_strategy (risky/optimal/safe) = strategia oceny SWOT przed rekomendacją handlu (edtrade/swot.py).
 Klucze bar_alpha / bar_font_scale / panel_font_scale = wygląd (CONTROL jak w TCE): przezroczystość paska i skale czcionek.
 """
 
@@ -29,6 +30,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     'pad_filter': 'auto',
     'max_star_distance_ls': 5000,
     'market_type': 'all',
+    'trade_strategy': 'optimal',
 }
 
 

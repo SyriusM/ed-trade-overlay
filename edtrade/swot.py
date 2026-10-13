@@ -6,7 +6,10 @@ Szanse:        wolne miejsce do dopełnienia, kilka towarów w jednym ładunku.
 Zagrożenia:    wiek danych rynku, brak potwierdzenia na żywym rynku (Market.json), wiele skoków, niskie bezpieczeństwo.
 
 Twarde odrzucenie (kandydat znika z rekomendacji): towaru nie ma na żywym rynku albo kosztuje tu więcej, niż da się
-za niego dostać; popyt 0 u kupca; dane rynku starsze niż STALE_REJECT_H.
+za niego dostać; popyt 0 u kupca; dane rynku za stare dla wybranej strategii.
+
+Strategia (config `trade_strategy`) ustawia progi i wagi: risky = maksymalny zysk, toleruje małą podaż i stare dane;
+optimal = domyślna równowaga; safe = świeże dane, głęboka podaż, mniej skoków, bez anarchii.
 """
 
 import json
@@ -20,11 +23,37 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-STALE_WARN_H = 6.0       # od tylu godzin wiek danych jest zagrożeniem pokazywanym graczowi
-STALE_REJECT_H = 72.0    # starsze dane = kandydat odrzucony
-LOW_FILL = 0.5           # ładunek poniżej połowy ładowni to słaba strona
 PRICE_UP = 0.10          # cena live wyższa o 10%+ od tej, którą liczył Spansh
 LIVE_MAX_AGE_S = 3600    # Market.json starszy niż godzina to poprzednia wizyta, nie żywy rynek
+
+
+
+@dataclass(frozen=True)
+class Strategy:
+    stale_warn_h: float      # od tylu godzin wiek danych jest zagrożeniem pokazywanym graczowi
+    stale_reject_h: float    # starsze dane = kandydat odrzucony
+    low_fill: float          # ładunek poniżej tej części ładowni to słaba strona
+    min_cover: float         # podaż/popyt pokrywające mniej niż tę część ładunku = odrzucenie (0 = tylko uwaga)
+    reject_low_security: bool
+    max_jumps: int           # więcej skoków na hop = odrzucenie (0 = bez limitu)
+    penalty: float           # o ile każda słabość/zagrożenie obniża pozycję w rankingu
+
+
+STRATEGIES = {
+    "risky": Strategy(stale_warn_h=24, stale_reject_h=240, low_fill=0.2, min_cover=0.0, reject_low_security=False,
+                      max_jumps=0, penalty=0.0),
+    "optimal": Strategy(stale_warn_h=6, stale_reject_h=72, low_fill=0.5, min_cover=0.0, reject_low_security=False,
+                        max_jumps=0, penalty=0.05),
+    "safe": Strategy(stale_warn_h=2, stale_reject_h=24, low_fill=0.5, min_cover=0.5, reject_low_security=True,
+                     max_jumps=2, penalty=0.15),
+}
+DEFAULT_STRATEGY = "optimal"
+STRATEGY_LABELS = {"risky": "Ryzykowna (max zysk)", "optimal": "Optymalna", "safe": "Bezpieczna (pewny handel)"}
+
+
+def get_strategy(name) -> Strategy:
+    return name if isinstance(name, Strategy) else STRATEGIES.get(name or DEFAULT_STRATEGY, STRATEGIES[DEFAULT_STRATEGY])
+
 
 # Etykiety (PL); po scaleniu katalogu tłumaczeń przejdą do edtrade/i18n.py
 LABELS = {
@@ -45,6 +74,9 @@ LABELS = {
     "not_profitable": "{name}: cena kupna ≥ sprzedaży",
     "no_demand": "brak popytu na {name}",
     "stale": "dane {age} — za stare",
+    "too_thin": "{what} {have}/{need} — za mało",
+    "too_far": "{n} skoki — za daleko",
+    "unsafe": "{value} — za ryzykownie",
 }
 
 LOW_SECURITY = {"anarchy": "anarchia", "lawless": "anarchia", "low": "niskie bezp."}
@@ -151,6 +183,12 @@ class Swot:
     threats: list = field(default_factory=list)
     rejected: str = ""          # powód twardego odrzucenia; pusty = kandydat dopuszczony
     profit: int = 0             # zysk po korekcie o żywy rynek
+    penalty: float = 0.0        # waga strategii za każdą słabość/zagrożenie
+
+    @property
+    def rank_factor(self) -> float:
+        """Mnożnik wyniku w rankingu: safe mocniej spycha ryzykowne okazje w dół, risky wcale."""
+        return max(0.2, 1.0 - self.penalty * (len(self.weaknesses) + len(self.threats)))
 
     def reasons(self, n: int = 2) -> list[str]:
         """Najważniejsze powody dla gracza: odrzucenie, potem słabości i zagrożenia, a gdy ich brak — mocne strony."""
@@ -167,39 +205,61 @@ class Swot:
         self.rejected = self.rejected or other.rejected
 
 
-def _age_check(swot: Swot, updated_at, now: float) -> None:
+def _age_check(swot: Swot, updated_at, now: float, st: Strategy) -> None:
     ts = _ts(updated_at)
     if not ts:
         return
     hours = max(0.0, (now - ts) / 3600)
-    if hours >= STALE_REJECT_H:
+    if hours >= st.stale_reject_h:
         swot.rejected = swot.rejected or _t("stale", age=age_text(hours))
-    elif hours >= STALE_WARN_H:
+    elif hours >= st.stale_warn_h:
         swot.threats.append(_t("age", age=age_text(hours)))
 
 
-def _security_check(swot: Swot, security: str) -> None:
+def _cover_check(swot: Swot, key: str, have: int, need: int, st: Strategy) -> None:
+    """Podaż/popyt mniejsze niż ładunek: uwaga, a w strategii safe przy płytkim rynku — odrzucenie."""
+    if need > 0 and have < need * st.min_cover:
+        swot.rejected = swot.rejected or _t("too_thin", what=LABELS[key].split()[0], have=have, need=need)
+    else:
+        swot.weaknesses.append(_t(key, have=have, need=need))
+
+
+def _security_check(swot: Swot, security: str, st: Strategy) -> None:
     key = (security or "").lower()
     for word, label in LOW_SECURITY.items():
         if word in key:
-            swot.threats.append(_t("security", value=label))
+            if st.reject_low_security and label == "anarchia":
+                swot.rejected = swot.rejected or _t("unsafe", value=label)
+            else:
+                swot.threats.append(_t("security", value=label))
             return
 
 
-def _fill_checks(swot: Swot, amount: int, capacity: int) -> None:
+def _jumps_check(swot: Swot, distance: float, jump_range: float, st: Strategy) -> None:
+    if not jump_range or distance <= jump_range:
+        return
+    jumps = math.ceil(distance / jump_range)
+    if st.max_jumps and jumps > st.max_jumps:
+        swot.rejected = swot.rejected or _t("too_far", n=jumps)
+    else:
+        swot.threats.append(_t("jumps", n=jumps))
+
+
+def _fill_checks(swot: Swot, amount: int, capacity: int, st: Strategy) -> None:
     if capacity <= 0:
         return
-    if amount < capacity * LOW_FILL:
+    if amount < capacity * st.low_fill:
         swot.weaknesses.append(_t("fill", pct=int(100 * amount / capacity)))
     if amount < capacity:
         swot.opportunities.append(_t("free", tons=capacity - amount))
 
 
 def assess_hop(hop, capacity: int, live: Optional[LiveMarket] = None, now: Optional[float] = None,
-               jump_range: float = 0.0, security: str = "") -> Swot:
+               jump_range: float = 0.0, security: str = "", strategy=DEFAULT_STRATEGY) -> Swot:
     """SWOT jednego hopu z trasy Spansh. Żywy rynek liczy się tylko, gdy to stacja kupna hopu."""
     now = now or time.time()
-    swot = Swot()
+    st = get_strategy(strategy)
+    swot = Swot(penalty=st.penalty)
     items = list(hop.commodities) or []
     live = live if live is not None and live.is_at(hop.source_system, hop.source_station, now) else None
 
@@ -215,19 +275,19 @@ def assess_hop(hop, capacity: int, live: Optional[LiveMarket] = None, now: Optio
                 dropped[c.name] = _t("not_profitable", name=c.name)
                 continue
             if item.stock < units:
-                swot.weaknesses.append(_t("supply", have=item.stock, need=units))
+                _cover_check(swot, "supply", item.stock, units, st)
                 units = item.stock
             if buy and item.buy_price > buy * (1 + PRICE_UP):
                 swot.threats.append(_t("price_up", name=c.name, pct=int(100 * (item.buy_price - buy) / buy)))
             buy = item.buy_price
         elif c.supply is not None and c.supply < units:
-            swot.weaknesses.append(_t("supply", have=c.supply, need=units))
+            _cover_check(swot, "supply", c.supply, units, st)
             units = c.supply
         if c.demand is not None and c.demand <= 0:
             dropped[c.name] = _t("no_demand", name=c.name)
             continue
         if c.demand is not None and c.demand < units:
-            swot.weaknesses.append(_t("demand", have=c.demand, need=units))
+            _cover_check(swot, "demand", c.demand, units, st)
             units = c.demand
         if units <= 0:
             continue
@@ -238,35 +298,35 @@ def assess_hop(hop, capacity: int, live: Optional[LiveMarket] = None, now: Optio
     swot.weaknesses[:0] = list(dropped.values())
     # Główny towar hopu niedostępny = to już inny handel niż ten, który policzył Spansh
     if items and (items[0].name in dropped or profit <= 0):
-        swot.rejected = dropped.get(items[0].name) or next(iter(dropped.values()), _t("no_stock", name=items[0].name))
+        swot.rejected = swot.rejected or dropped.get(items[0].name) or next(iter(dropped.values()), _t("no_stock", name=items[0].name))
     if profit > 0:
         swot.strengths.append(_t("profit", value=short_money(profit)))
         if amount:
             swot.strengths.append(_t("per_t", value=short_money(profit / amount)))
-    _fill_checks(swot, amount, capacity)
+    _fill_checks(swot, amount, capacity, st)
     if len(items) > 1:
         swot.opportunities.append(_t("mix", n=len(items)))
 
     if live is None:
-        _age_check(swot, getattr(hop, "source_updated_at", 0), now)
-    _age_check(swot, getattr(hop, "destination_updated_at", 0), now)
-    if jump_range and hop.distance > jump_range:
-        swot.threats.append(_t("jumps", n=math.ceil(hop.distance / jump_range)))
-    _security_check(swot, security)
+        _age_check(swot, getattr(hop, "source_updated_at", 0), now, st)
+    _age_check(swot, getattr(hop, "destination_updated_at", 0), now, st)
+    _jumps_check(swot, hop.distance, jump_range, st)
+    _security_check(swot, security, st)
     return swot
 
 
 def assess_route(route, capacity: int, live: Optional[LiveMarket] = None, now: Optional[float] = None,
-                 jump_range: float = 0.0, security: str = "") -> Swot:
+                 jump_range: float = 0.0, security: str = "", strategy=DEFAULT_STRATEGY) -> Swot:
     """SWOT całej trasy: hop odrzucony = trasa odrzucona (plan się rozsypuje w połowie)."""
     now = now or time.time()
-    total = Swot()
+    total = Swot(penalty=get_strategy(strategy).penalty)
     hops = route.hops_list or []
     if not hops:
         return total
     first_live = live is not None and live.is_at(hops[0].source_system, hops[0].source_station, now)
     for i, hop in enumerate(hops):
-        swot = assess_hop(hop, capacity, live if i == 0 else None, now, jump_range, security if i == 0 else "")
+        swot = assess_hop(hop, capacity, live if i == 0 else None, now, jump_range, security if i == 0 else "",
+                          strategy)
         total.merge(swot)
         total.profit += swot.profit
     if not first_live:
@@ -277,11 +337,11 @@ def assess_route(route, capacity: int, live: Optional[LiveMarket] = None, now: O
 
 
 def apply_to_route(route, capacity: int, live: Optional[LiveMarket] = None, now: Optional[float] = None,
-                   jump_range: float = 0.0, security: str = ""):
+                   jump_range: float = 0.0, security: str = "", strategy=DEFAULT_STRATEGY):
     """Ocena przed rekomendacją: odrzucona trasa dostaje błąd z powodem, dopuszczona — `_swot` z uwagami."""
     if route.error or not route.hops_list:
         return route
-    swot = assess_route(route, capacity, live, now, jump_range, security)
+    swot = assess_route(route, capacity, live, now, jump_range, security, strategy)
     route._swot = swot
     if swot.rejected:
         logger.info("SWOT odrzuca trasę: %s", swot.rejected)
@@ -292,10 +352,11 @@ def apply_to_route(route, capacity: int, live: Optional[LiveMarket] = None, now:
 
 
 def assess_trade(trade, capacity: int, live: Optional[LiveMarket] = None, live_station: tuple = (),
-                 now: Optional[float] = None) -> Swot:
+                 now: Optional[float] = None, strategy=DEFAULT_STRATEGY, jump_range: float = 0.0) -> Swot:
     """SWOT okazji z zakładki Okolica (NearbyTrade). live_station = (system, stacja kupna)."""
     now = now or time.time()
-    swot = Swot()
+    st = get_strategy(strategy)
+    swot = Swot(penalty=st.penalty)
     units, buy = trade.units, trade.buy_price
     live_ok = bool(live_station) and live is not None and live.is_at(*live_station, now=now)
     if trade.buy_price > 0 and live_ok:
@@ -309,18 +370,18 @@ def assess_trade(trade, capacity: int, live: Optional[LiveMarket] = None, live_s
         buy = item.buy_price
         units = min(capacity or units, item.stock, trade.demand or item.stock)
         if item.stock < capacity:
-            swot.weaknesses.append(_t("supply", have=item.stock, need=capacity))
+            _cover_check(swot, "supply", item.stock, capacity, st)
     elif trade.buy_price > 0:
         if trade.stock <= 0:
             swot.rejected = _t("no_stock", name=trade.commodity)
             return swot
         if trade.stock < capacity:
-            swot.weaknesses.append(_t("supply", have=trade.stock, need=capacity))
+            _cover_check(swot, "supply", trade.stock, capacity, st)
         swot.threats.append(_t("no_live"))
     if trade.demand and trade.demand < units:
         units = trade.demand
     if trade.demand and capacity and trade.demand < capacity:
-        swot.weaknesses.append(_t("demand", have=trade.demand, need=capacity))
+        _cover_check(swot, "demand", trade.demand, capacity, st)
     swot.profit = units * (trade.sell_price - buy)
     if swot.profit <= 0:
         swot.rejected = _t("not_profitable", name=trade.commodity)
@@ -328,20 +389,21 @@ def assess_trade(trade, capacity: int, live: Optional[LiveMarket] = None, live_s
     swot.strengths.append(_t("profit", value=short_money(swot.profit)))
     swot.strengths.append(_t("per_t", value=short_money(trade.sell_price - buy)))
     if trade.buy_price > 0:
-        _fill_checks(swot, units, capacity)
-    _age_check(swot, trade.updated_at, now)
+        _fill_checks(swot, units, capacity, st)
+    _age_check(swot, trade.updated_at, now, st)
+    _jumps_check(swot, trade.distance, jump_range, st)
     return swot
 
 
 def screen_trades(trades: list, capacity: int, live: Optional[LiveMarket] = None, live_station: tuple = (),
-                  now: Optional[float] = None) -> tuple[list, dict]:
+                  now: Optional[float] = None, strategy=DEFAULT_STRATEGY, jump_range: float = 0.0) -> tuple[list, dict]:
     """Odsiewa odrzucone okazje (kolejność zachowana); zwraca (dopuszczone, {id(trade): Swot}).
 
     Szansa: inne towary z tej listy sprzedawane w tej samej stacji — razem dopełnią ładownię.
     """
     kept, swots = [], {}
     for trade in trades:
-        swot = assess_trade(trade, capacity, live, live_station, now)
+        swot = assess_trade(trade, capacity, live, live_station, now, strategy, jump_range)
         if swot.rejected:
             logger.info("SWOT odrzuca %s → %s: %s", trade.commodity, trade.sell_station, swot.rejected)
             continue
