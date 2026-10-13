@@ -67,7 +67,7 @@ class Need:
         return max(0, self.need - self.have)
 
 
-def _fetch_cached(url: str, filename: str, cache_dir: Optional[Path] = None) -> Optional[str]:
+def fetch_cached(url: str, filename: str, cache_dir: Optional[Path] = None) -> Optional[str]:
     """Świeży cache (<7 dni) → z dysku; inaczej pobierz i zapisz; błąd sieci → stary cache albo None."""
     path = (cache_dir or DEFAULT_CACHE_DIR) / filename
     if path.is_file() and time.time() - path.stat().st_mtime < CACHE_MAX_AGE_S:
@@ -116,12 +116,12 @@ def parse_blueprints(text: str) -> dict[str, Blueprint]:
 
 
 def load_material_table(cache_dir: Optional[Path] = None) -> dict[str, MaterialInfo]:
-    text = _fetch_cached(FDEVIDS_MATERIALS_URL, "material.csv", cache_dir)
+    text = fetch_cached(FDEVIDS_MATERIALS_URL, "material.csv", cache_dir)
     return parse_material_table(text) if text else {}
 
 
 def load_blueprints(cache_dir: Optional[Path] = None) -> dict[str, Blueprint]:
-    text = _fetch_cached(BLUEPRINTS_URL, "blueprints.json", cache_dir)
+    text = fetch_cached(BLUEPRINTS_URL, "blueprints.json", cache_dir)
     try:
         return parse_blueprints(text) if text else {}
     except (json.JSONDecodeError, AttributeError) as e:

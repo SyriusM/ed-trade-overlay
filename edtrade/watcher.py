@@ -58,7 +58,7 @@ def _find_journal_dir() -> Optional[Path]:
     return None
 
 # Pola interesujących nas eventów
-INTERESTING_EVENTS = {"Docked", "Loadout", "StartedSession", "Location", "Cargo", "Market", "Materials"}
+INTERESTING_EVENTS = {"Docked", "Loadout", "StartedSession", "Location", "Cargo", "Market", "Materials", "MarketBuy", "MarketSell"}
 
 
 class JournalWatcher:
@@ -73,6 +73,7 @@ class JournalWatcher:
         on_location: Optional[Callable] = None,
         on_market: Optional[Callable] = None,
         on_materials: Optional[Callable] = None,
+        on_trade: Optional[Callable] = None,
     ):
         self.journal_dir = journal_dir
         if self.journal_dir is None:
@@ -83,6 +84,7 @@ class JournalWatcher:
         self.on_location = on_location
         self.on_market = on_market
         self.on_materials = on_materials
+        self.on_trade = on_trade
         self._latest_file: Optional[Path] = None
         self._file_pos: int = 0
         self._running = False
@@ -212,6 +214,12 @@ class JournalWatcher:
                         self.on_materials(ev)
                     except Exception:
                         logger.exception("Błąd w on_materials")
+            elif event_type in ("MarketBuy", "MarketSell"):
+                if self.on_trade:
+                    try:
+                        self.on_trade(ev)
+                    except Exception:
+                        logger.exception("Błąd w on_trade")
             elif event_type == "Location":
                 system = ev.get("StarSystem", "")
                 station = ev.get("Station", "")

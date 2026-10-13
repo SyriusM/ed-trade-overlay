@@ -209,6 +209,9 @@ class TradeOverlay:
         if route.hops_list and route.hops > 1:
             # Multi-hop route
             hop_info = f" Hop {hop_num}/{route.hops}"
+        steps = getattr(route, '_checklist_text', '')
+        if steps:
+            hop_info += f" {steps}"
 
         # Dane do wyświetlenia — AKTUALNY hop, nie zawsze hop 1 (bug: route.buy_item
         # itp. to zawsze pierwszy hop, a route.destination_system to KONIEC całej

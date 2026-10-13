@@ -14,13 +14,15 @@ import time
 from pathlib import Path
 
 from .watcher import JournalWatcher
-from .trade import TradeEngine
+from .trade import (TradeEngine, get_system_info, search_stations, find_material_traders,
+                    find_mining_hotspots, find_mineral_buyers)
 from .overlay import TradeOverlay
 from .panel import TradePanel
 from .window_watch import get_active_window
 from . import market_cache
 from .market_cache import init_market_cache
 from . import config as user_config_module
+from .checklist import RouteChecklist, load_commodity_names
 from typing import Optional
 
 logger = logging.getLogger("edto")
@@ -131,9 +133,9 @@ class EDTradeOverlayApp:
             on_docked=self._on_docked,
             on_loadout=self._on_loadout,
             on_cargo=self._on_cargo,
-            on_location=self._on_location,
             on_market=self._on_market,
             on_materials=self._on_materials,
+            on_trade=self._on_trade,
         )
         self._dock_count = 0
         self._last_system = ""
@@ -141,6 +143,9 @@ class EDTradeOverlayApp:
         self._last_capacity = 0.
         self._last_active_class: Optional[str] = None
         self._bar_visible: bool = True
+        self.checklist: Optional[RouteChecklist] = None
+        self._commodity_names: dict[str, str] = {}
+        self._cargo: list[dict] = []
 
         # Podłącz callback pollingu do overlaya
         if self.overlay:
@@ -187,39 +192,50 @@ class EDTradeOverlayApp:
         if route.error:
             logger.error("Błąd przeliczenia trasy po Loadout: %s", route.error)
 
-        if self.overlay:
-            self.overlay.update_route(route)
+        self._publish_route(route, system, station)
         logger.info("Trasa po Loadout: %s", route.summary())
         self._last_capacity = capacity
 
     def _on_cargo(self, event: dict):
         """Reaguje na event Cargo — przesyła listę towarów do overlaya."""
+        self._cargo = event.get("Cargo", [])
         if self.overlay:
-            cargo_list = event.get("Cargo", [])
+            cargo_list = self._cargo
             self.overlay.set_player_cargo(cargo_list)
             logger.debug("Cargo event: %d pozycji", len(cargo_list))
 
-    def _on_location(self, event: dict):
-        """Reaguje na event Location — inkrementuje _current_hop gdy gracz
-        dotrze do kolejnego hopu trasy."""
-        system = event.get("StarSystem", "")
-        if not system or not self.overlay or not self.overlay.current_route:
-            return
+    def _publish_route(self, route, system: str, station: str) -> None:
+        """Nowa trasa → nowa checklista (kup → leć → sprzedaj) i wysłanie do overlaya."""
+        self.checklist = None
+        if not route.error and route.hops_list:
+            if not self._commodity_names:
+                self._commodity_names = load_commodity_names()
+            self.checklist = RouteChecklist(
+                route, self._commodity_names,
+                cargo=self._cargo or self.watcher._player_cargo,
+                docked=(system, station),
+            )
+            logger.info("Checklista: %s", self.checklist.status_text())
+        if self.overlay:
+            self.overlay.update_route(route)
 
-        route = self.overlay.current_route
-        # Sprawdź czy system to kolejny hop
-        if route.hops_list:
-            next_hop_num = getattr(route, '_current_hop', 1)
-            if next_hop_num < len(route.hops_list):
-                next_hop = route.hops_list[next_hop_num]
-                if next_hop.destination_system == system:
-                    route._current_hop = next_hop_num + 1
-                    logger.info(
-                        "Hop advanced: %d → %d (system=%s)",
-                        next_hop_num, next_hop_num + 1, system,
-                    )
-                    # wymuś natychmiastowe odświeżenie overlaya
-                    self.overlay._refresh_now()
+    def _feed_checklist(self, event: dict) -> None:
+        if self.checklist is None or not self.checklist.on_event(event):
+            return
+        logger.info("Checklista: hop %d/%d %s", self.checklist.hop_index + 1,
+                    len(self.checklist.hops), self.checklist.status_text())
+        if self.overlay:
+            self.overlay._refresh_now()
+
+    def _on_trade(self, event: dict):
+        """MarketBuy/MarketSell — odhaczanie kroków; po ukończeniu trasy od razu następna z bieżącej stacji."""
+        was_finished = self.checklist is None or self.checklist.finished
+        self._feed_checklist(event)
+        if not was_finished and self.checklist.finished and "/" in self._last_system:
+            system, station = self._last_system.split("/", 1)
+            logger.info("Trasa ukończona — liczę następną z %s/%s", system, station)
+            self._last_system = ""
+            self._on_docked({"StarSystem": system, "StationName": station})
 
     def _on_docked(self, event: dict):
         """Reaguje na event Docked — wylicza najlepszą trasę."""
@@ -229,6 +245,9 @@ class EDTradeOverlayApp:
         if not system or not station:
             logger.warning("Docked bez system/stacja: %s", event)
             return
+
+        self._feed_checklist(event)
+        following = self.checklist is not None and self.checklist.follows_plan(system, station)
 
         # Unikaj redundancyjnych wyliczeń — ten sam system/stacja
         key = f"{system}/{station}"
@@ -246,15 +265,18 @@ class EDTradeOverlayApp:
             except Exception:
                 logger.exception("Błąd przekazania stacji do panelu")
 
-        # Wylicz trasę przez Spansh API (nie blokuje overlaya)
-        route = self.trade_engine.calculate_route_via_spansh(system, station)
+        # Dokowanie w celu bieżącego hopu = gracz realizuje plan — nie nadpisujemy trasy
+        route = None
+        if following:
+            logger.info("Docked w celu hopu %d — trasa w toku, bez przeliczania", self.checklist.hop_index + 1)
+        else:
+            route = self.trade_engine.calculate_route_via_spansh(system, station)
 
         # Pobierz info o systemie i stacjach
         try:
             system_id64 = str(event.get('SystemAddress', ''))
             info_parts = []
             if system_id64:
-                from .trade import get_system_info, search_stations
                 sys_info = get_system_info(system_id64)
                 if sys_info.name:
                     info_parts.append(f'{sys_info.name} | {sys_info.allegiance} | sec:{sys_info.security}')
@@ -282,7 +304,6 @@ class EDTradeOverlayApp:
         try:
             material_kind = self.user_config.get('material_kind', '')
             if material_kind and self.overlay:
-                from .trade import find_material_traders
                 traders = find_material_traders(system, material_kind, max_ly=50, size=5)
                 if traders:
                     names = ', '.join(t.name for t in traders[:3])
@@ -295,7 +316,6 @@ class EDTradeOverlayApp:
         try:
             mineral = self.user_config.get('mining_mineral', '')
             if mineral and self.overlay:
-                from .trade import find_mining_hotspots, find_mineral_buyers
                 hotspots = find_mining_hotspots(system, mineral, max_ly=50, size=3)
                 buyers = find_mineral_buyers(mineral, system, max_ly=60, size=3)
                 parts = []
@@ -311,12 +331,12 @@ class EDTradeOverlayApp:
         except Exception:
             logger.exception('Błąd automatu mining przy Docked')
 
+        if route is None:
+            return
         if route.error:
             logger.error("Błąd kalkulacji: %s", route.error)
 
-        # Aktualizuj overlay
-        if self.overlay:
-            self.overlay.update_route(route)
+        self._publish_route(route, system, station)
         logger.info("Trasa: %s", route.summary())
 
         # Zapisz capacity użyte do obliczenia trasy
