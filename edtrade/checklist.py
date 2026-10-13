@@ -127,6 +127,10 @@ class RouteChecklist:
         return bool(hop) and (system.lower(), station.lower()) == (
             hop.destination_system.lower(), hop.destination_station.lower())
 
+    def carrying(self) -> bool:
+        """Towar bieżącego hopu jest na pokładzie (kupiony, jeszcze nie sprzedany) — gracz jest w trakcie kursu."""
+        return not self.finished and self.bought > 0 and self.sold < self.bought
+
     def on_event(self, ev: dict) -> bool:
         """Zwraca True, gdy stan checklisty się zmienił. Eventy sprzed utworzenia trasy są ignorowane
         (catch-up journala przy starcie odtwarza historię)."""

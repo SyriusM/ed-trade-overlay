@@ -142,3 +142,20 @@ class TestEmptyLeg(unittest.TestCase):
         cl = RouteChecklist(route, NAMES, docked=("A", "a"), created_at=T0)
         cl.on_event({"timestamp": ts(1), "event": "Docked", "StarSystem": "B", "StationName": "b"})
         self.assertEqual(cl.hop_index, 1)
+
+
+class TestCarrying(unittest.TestCase):
+    def test_carrying_after_buy_until_sold(self):
+        route = TradeRoute(hops=1, hops_list=[Hop("A", "a", "B", "b", "Gold", 10, 1, 2)])
+        cl = RouteChecklist(route, NAMES, docked=("A", "a"), created_at=T0)
+        self.assertFalse(cl.carrying())
+        cl.on_event(buy(1, "gold", 10))
+        self.assertTrue(cl.carrying())  # postój po drodze nie przelicza trasy
+        cl.on_event({"timestamp": ts(2), "event": "Docked", "StarSystem": "B", "StationName": "b"})
+        cl.on_event(sell(3, "gold", 10))
+        self.assertFalse(cl.carrying())
+
+    def test_cargo_already_aboard_counts_as_bought(self):
+        route = TradeRoute(hops=1, hops_list=[Hop("A", "a", "B", "b", "Gold", 249, 0, 2)])
+        cl = RouteChecklist(route, NAMES, cargo=[{"Name": "gold", "Count": 249}], docked=("A", "a"), created_at=T0)
+        self.assertIn("✓ kup 249/249", cl.status_text())
