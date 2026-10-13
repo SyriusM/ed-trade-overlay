@@ -7,9 +7,11 @@
 """
 
 import argparse
+import json
 import logging
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -152,6 +154,10 @@ class EDTradeOverlayApp:
         self._commodity_names: dict[str, str] = {}
         self._cargo: list[dict] = []
         self._ship_large_pad = False
+        self._last_docked_event: dict = {}
+        self._refresh_lock = threading.Lock()
+        if self.panel is not None:
+            self.panel.on_refresh = self.refresh
 
         # Podłącz callback pollingu do overlaya
         if self.overlay:
@@ -271,6 +277,8 @@ class EDTradeOverlayApp:
         if not system or not station:
             logger.warning("Docked bez system/stacja: %s", event)
             return
+        if event.get("SystemAddress"):
+            self._last_docked_event = event
 
         self._feed_checklist(event)
         following = self.checklist is not None and self.checklist.follows_plan(system, station)
@@ -389,6 +397,44 @@ class EDTradeOverlayApp:
         """Reaguje na event Materials (start gry) — stan materiałów do zakładki Inżynieria."""
         if self.panel is not None:
             self.panel.set_materials(event)
+
+    def refresh(self) -> None:
+        """[REFRESH] z panelu (wątek Tk): to, co robi restart aplikacji, ale w tle i bez zamykania okien."""
+        threading.Thread(target=self._refresh_worker, daemon=True).start()
+
+    def _refresh_worker(self) -> None:
+        """Doczytaj Cargo.json i Market.json, potem przelicz trasę i rynek dla stacji, w której stoisz."""
+        if not self._refresh_lock.acquire(blocking=False):
+            return
+        try:
+            logger.info("REFRESH: ponowne pobieranie danych")
+            self.watcher._load_cargo_json()
+            self._on_cargo({"event": "Cargo", "Vessel": "Ship", "Inventory": self.watcher._player_cargo})
+            market_file = self.watcher.journal_dir / "Market.json"
+            if market_file.is_file():
+                try:
+                    with open(market_file, "r", encoding="utf-8") as f:
+                        self._on_market(json.load(f))
+                except (json.JSONDecodeError, OSError) as e:
+                    logger.warning("REFRESH: błąd odczytu Market.json: %s", e)
+            if "/" in self._last_system:
+                system, station = self._last_system.split("/", 1)
+                event = self._last_docked_event
+                if (event.get("StarSystem"), event.get("StationName")) != (system, station):
+                    event = {"StarSystem": system, "StationName": station}
+                # Jak po restarcie: nowa trasa od zera (bez tego _on_docked pominąłby tę samą stację)
+                self._last_system = ""
+                self.checklist = None
+                self._on_docked(event)
+            elif self.panel is not None:
+                self.panel.window.after(0, self.panel.refresh_market_tab)
+                self.panel.window.after(0, self.panel.refresh_nearby_tab)
+        except Exception:
+            logger.exception("Błąd REFRESH")
+        finally:
+            self._refresh_lock.release()
+            if self.panel is not None:
+                self.panel.refresh_finished()
 
     def _apply_bar_visibility(self, window_class: Optional[str]) -> None:
         """Gdy włączone bar_only_when_game_focused: pasek widoczny tylko, gdy aktywne okno ma klasę game_window_class."""
