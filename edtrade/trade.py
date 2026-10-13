@@ -1382,6 +1382,8 @@ class TradeEngine:
 
             # system_id64 destynacji hopa (dla Feature B — scoopable check)
             hop._destination_id64 = dst.get("system_id64", "")
+            # wiek danych rynku celu — do karty stacji docelowej na dolnym pasku
+            hop._destination_market_ts = dst.get("market_updated_at", 0)
             logger.debug("Hop %d: dest=%s/%s id64=%s", len(route.hops_list),
                          dst.get("system","?"), dst.get("station","?"), hop._destination_id64)
 

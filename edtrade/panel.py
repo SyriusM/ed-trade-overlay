@@ -15,6 +15,7 @@ from . import materials as mats
 from . import tce_theme as tce
 from .checklist import load_commodity_names
 from .filters import filter_from_config
+from .hotkeys import DEFAULT_MODIFIER, MODIFIERS, PANEL_PAGES, slot_geometry, slots_from_config
 from datetime import datetime, timezone
 from .trade import (get_system_info, search_stations, find_material_traders, find_mining_hotspots, find_mineral_buyers,
                     find_commodity_sellers, get_station_market, StationMarket, JourneyPlan, TradeEngine,
@@ -41,6 +42,8 @@ def _data_age(updated_at: str, now: Optional[datetime] = None) -> str:
 
 logger = logging.getLogger(__name__)
 
+PANEL_WINDOW_CLASS = 'EdTradePanel'
+
 
 def _vs_mean(price: int, mean: int) -> str:
     """Cena wzgledem sredniej galaktycznej, np. '+12%'."""
@@ -64,12 +67,16 @@ class TradePanel:
     """Osobne okno z zakładkami (System/Materiały/Mining/Towary/Market/Journey/Inżynieria/Ustawienia)."""
 
     def __init__(self, master: tk.Tk, user_config: Optional[dict] = None, config_path: Optional[Path] = None,
-                 on_appearance_change: Optional[Callable[[float, float], None]] = None):
+                 on_appearance_change: Optional[Callable[[float, float], None]] = None,
+                 bar_margins: Optional[Callable[[], tuple[int, int]]] = None):
         self.master = master
         self.config_path = config_path
         self.user_config = user_config if user_config is not None else load_user_config(config_path)
         self.trade_engine = TradeEngine()
-        self.window = tk.Toplevel(master)
+        # Własna klasa okna: tryb "pasek tylko przy grze" nie chowa pasków, gdy fokus ma panel
+        self.window = tk.Toplevel(master, class_=PANEL_WINDOW_CLASS)
+        self.bar_margins = bar_margins
+        self._page_slot: Optional[str] = None
         self.window.title(PANEL_TITLE)
         self.window.geometry('1100x700')
         self.window.configure(bg=tce.BG)
@@ -408,6 +415,8 @@ class TradePanel:
                       command=lambda _v, var=var, value=value: self._appearance_preview(var, value)).pack(
                 side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
 
+        self._build_hotkey_settings()
+
         self.save_settings_btn = ttk.Button(self.settings_frame, text='Zapisz', command=self.save_settings)
         self.save_settings_btn.grid(row=12, column=1, sticky='w', pady=(10, 4))
 
@@ -418,6 +427,86 @@ class TradePanel:
         self._render_context()
         self.nav = tce.NavBar(self.window, self.notebook, self.fonts, on_change=self.title_bar.set_title)
         self.nav.pack(fill=tk.X, padx=8, pady=(6, 0), before=self.notebook)
+
+    def _build_hotkey_settings(self) -> None:
+        """Skróty: modyfikator + siatka 3×3 jak klawiatura numeryczna — w każdym polu cel (pasek / strona)."""
+        box = ttk.Frame(self.settings_frame)
+        box.grid(row=0, column=2, rowspan=14, sticky='n', padx=(24, 0), pady=4)
+        ttk.Label(box, text='Skróty (klawiatura numeryczna):').grid(row=0, column=0, columnspan=3, sticky='w')
+        modifier_line = ttk.Frame(box)
+        modifier_line.grid(row=1, column=0, columnspan=3, sticky='w', pady=(4, 6))
+        ttk.Label(modifier_line, text='Modyfikator:').pack(side=tk.LEFT)
+        self._modifier_labels = {m: (m or 'brak') for m in MODIFIERS}
+        self.hotkey_modifier_var = tk.StringVar(value=self._modifier_labels.get(
+            str(self.user_config.get('hotkey_modifier', DEFAULT_MODIFIER)), DEFAULT_MODIFIER))
+        ttk.Combobox(modifier_line, textvariable=self.hotkey_modifier_var, values=list(self._modifier_labels.values()),
+                     state='readonly', width=14).pack(side=tk.LEFT, padx=(6, 0))
+        self._target_labels = {'': '—'}
+        self._target_labels.update({'top_bar': 'Górny pasek', 'bottom_bar': 'Dolny pasek'})
+        self._target_labels.update({page: self.notebook.tab(self.page_frame(page), 'text') for page in PANEL_PAGES})
+        slots = slots_from_config(self.user_config)
+        self.slot_vars: dict[str, tk.StringVar] = {}
+        for digit in '789456123':
+            index = '789456123'.index(digit)
+            cell = ttk.Frame(box)
+            cell.grid(row=2 + index // 3, column=index % 3, padx=2, pady=2, sticky='ew')
+            ttk.Label(cell, text=f'Num{digit}').pack(side=tk.TOP, anchor='w')
+            var = tk.StringVar(value=self._target_labels.get(slots.get(digit, ''), self._target_labels['']))
+            ttk.Combobox(cell, textvariable=var, values=list(self._target_labels.values()), state='readonly',
+                         width=13).pack(side=tk.TOP)
+            self.slot_vars[digit] = var
+        ttk.Label(box, text=('Pozycja klawisza = miejsce na ekranie. Skróty działają, gdy fokus ma okno aplikacji;\n'
+                                  'w grze przez skróty KDE: python -m edtrade.hotkeys <cel> '
+                                  '(lista: python -m edtrade.hotkeys --list).'), wraplength=420, justify=tk.LEFT).grid(
+            row=5, column=0, columnspan=3, sticky='w', pady=(8, 0))
+
+    def _hotkey_settings_values(self) -> dict:
+        modifier = next((k for k, v in self._modifier_labels.items() if v == self.hotkey_modifier_var.get()),
+                        DEFAULT_MODIFIER)
+        by_label = {v: k for k, v in self._target_labels.items()}
+        return {'hotkey_modifier': modifier,
+                'numpad_slots': {d: by_label.get(var.get(), '') for d, var in sorted(self.slot_vars.items())}}
+
+    # --- skróty: strona panelu w miejscu ekranu odpowiadającym klawiszowi ---
+    def page_frame(self, page: str) -> Optional[tk.Misc]:
+        return getattr(self, f'tab_{page}', None) if page in PANEL_PAGES else None
+
+    def current_page(self) -> Optional[str]:
+        selected = self.notebook.select()
+        return next((p for p in PANEL_PAGES if str(self.page_frame(p)) == selected), None)
+
+    def toggle_page(self, page: str, slot: Optional[str] = None) -> bool:
+        """Skrót strony: pokaż ją w miejscu `slot`; ten sam skrót przy otwartej stronie chowa panel.
+
+        Zwraca True, gdy panel jest po wszystkim widoczny."""
+        frame = self.page_frame(page)
+        if frame is None:
+            return False
+        visible = self.window.state() == 'normal'
+        if visible and self.current_page() == page and slot == self._page_slot:
+            self.hide()
+            return False
+        self.nav.select_frame(frame)
+        self._page_slot = slot
+        if slot:
+            self._place_at_slot(slot)
+        self.show()
+        return True
+
+    def _place_at_slot(self, slot: str) -> None:
+        self.window.update_idletasks()
+        width = self.window.winfo_width() if self.window.winfo_ismapped() else self.window.winfo_reqwidth()
+        height = self.window.winfo_height() if self.window.winfo_ismapped() else self.window.winfo_reqheight()
+        try:
+            geo_w, geo_h = (int(v) for v in self.window.geometry().split('+', 1)[0].split('x'))
+            if geo_w > 1 and geo_h > 1:
+                width, height = geo_w, geo_h
+        except ValueError:
+            pass
+        top, bottom = self.bar_margins() if self.bar_margins else (0, 0)
+        x, y = slot_geometry(slot, self.window.winfo_screenwidth(), self.window.winfo_screenheight(),
+                             width, height, top, bottom)
+        self.window.geometry(f'+{x}+{y}')
 
     def _appearance_preview(self, var: tk.DoubleVar, value_label: ttk.Label) -> None:
         """Suwaki CONTROL działają na żywo; zapis do configu dopiero przyciskiem ZAPISZ."""
@@ -1047,6 +1136,7 @@ class TradePanel:
             'pad_filter': pad_filter,
             'max_star_distance_ls': max_star,
             'market_type': market_type,
+            **self._hotkey_settings_values(),
         })
 
         # Zapisz do pliku
