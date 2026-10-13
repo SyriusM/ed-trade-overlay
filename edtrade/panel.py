@@ -407,7 +407,9 @@ class TradePanel:
         tce.SectionHeader(self.tab_session, 'Podsumowanie sesji', self.fonts).pack(fill=tk.X, padx=10, pady=(10, 2))
         self.session_grid = tce.KeyValueGrid(self.tab_session, [
             ('time', 'Czas sesji'), ('profit', 'Zysk'), ('per_hour', 'Zysk na godzinę'),
-            ('sold', 'Sprzedano'), ('spent', 'Wydano na towar'), ('best', 'Najlepszy kurs')], self.fonts)
+            ('sold', 'Sprzedano'), ('spent', 'Wydano na towar'), ('best', 'Najlepszy kurs'),
+            ('pace', 'Twoje tempo lotu')], self.fonts)
+        self._pilot_text = 'szacunek ogólny'
         self.session_grid.pack(fill=tk.X, padx=10, pady=(2, 6))
         self.session_header = tce.SectionHeader(self.tab_session, 'Transakcje', self.fonts)
         self.session_header.pack(fill=tk.X, padx=10, pady=(8, 2))
@@ -908,6 +910,14 @@ class TradePanel:
             self.commodity_header.set(f'Brak stacji, gdzie {what} {commodity} (albo nieznana nazwa)', filter_text)
         self.commodity_btn.config(state=tk.NORMAL)
 
+    def show_pilot(self, text: str) -> None:
+        """Wolane z watku watchera: tempo z kalibracji (czasy CR/H w rankingach są już nim przeskalowane)."""
+        self._pilot_text = text
+        try:
+            self.window.after(0, lambda: self.session_grid.set(pace=self._pilot_text))
+        except Exception:
+            pass
+
     def show_session(self, summary) -> None:
         """Wolane z watku watchera; nazwy towarow (FDevIDs, cache) ladowane tutaj, nie w watku Tk."""
         if not self._session_names:
@@ -932,7 +942,7 @@ class TradePanel:
             summary = self._session_summary
         if summary is None or not summary.trades:
             self.session_grid.set(time='—', profit='—', per_hour='—', sold='—', spent='—',
-                                  best='Brak transakcji w tej sesji')
+                                  best='Brak transakcji w tej sesji', pace=self._pilot_text)
             self.session_table.set_rows([])
             return
         hours = summary.hours()
@@ -945,7 +955,8 @@ class TradePanel:
             per_hour=f'{per_hour:,} cr/h' if per_hour else 'za mało danych',
             sold=f'{summary.tons_sold:,} t za {summary.revenue:,} cr ({len(summary.sells)} sprzedaży)',
             spent=f'{summary.spent:,} cr',
-            best=f'{name(best)} · {best.profit:,} cr · {best.station or "?"}' if best else '—')
+            best=f'{name(best)} · {best.profit:,} cr · {best.station or "?"}' if best else '—',
+            pace=self._pilot_text)
         trades = list(reversed(summary.trades))  # najnowsze na gorze
         rows, sorts, tags = [], [], []
         for t in trades:

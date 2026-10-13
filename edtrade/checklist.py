@@ -88,6 +88,8 @@ class RouteChecklist:
         self.docked = (docked[0].lower(), docked[1].lower())
         self.hop_index = 0
         self.finished = not self.hops
+        self.last_buy_ts: Optional[datetime] = None
+        self._trip: Optional[tuple] = None  # (hop, zakup, dokowanie w celu) — do kalibracji tempa
         self._reset_steps()
         # Zakup często dzieje się, zanim Spansh policzy trasę (40-180 s) — startowy stan z ładowni
         if self.hop and cargo:
@@ -95,6 +97,7 @@ class RouteChecklist:
         self._sync_route()
 
     def _reset_steps(self) -> None:
+        self.last_buy_ts = None
         self.bought = 0
         self.arrived = False
         self.sold = 0
@@ -141,10 +144,13 @@ class RouteChecklist:
             self.docked = (ev.get("StarSystem", "").lower(), ev.get("StationName", "").lower())
             if self.at_destination() and not self.arrived:
                 self.arrived = True
+                if self.last_buy_ts is not None and ts is not None:
+                    self._trip = (self.hop, self.last_buy_ts, ts)
                 return True
             return False
         if event == "MarketBuy" and self._matches(ev.get("Type", "")):
             self.bought += int(ev.get("Count") or 0)
+            self.last_buy_ts = ts
             return True
         if event == "MarketSell" and self._matches(ev.get("Type", "")) and self.at_destination():
             self.arrived = True
@@ -153,6 +159,11 @@ class RouteChecklist:
                 self._advance()
             return True
         return False
+
+    def pop_trip(self) -> Optional[tuple]:
+        """Zakończony lot hopu (hop, czas zakupu, czas dokowania w celu) — raz, potem None."""
+        trip, self._trip = self._trip, None
+        return trip
 
     def _advance(self) -> None:
         self.hop_index += 1

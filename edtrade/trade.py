@@ -670,10 +670,23 @@ def supercruise_seconds(distance_to_arrival_ls: float) -> float:
     return 35.0 + 13.0 * math.sqrt(max(distance_to_arrival_ls, 0.0) / 100.0)
 
 
-def travel_seconds(distance_ly: float, distance_to_arrival_ls: float, jump_range: float = 30.0) -> float:
-    """Przybliżony czas od odlotu do zadokowania u kupca — podstawa rankingu CR/H (czas to pieniądz)."""
+PILOT_FACTOR = 1.0  # Twoje tempo z realnych kursów (edtrade/pilot.py) — ustawiane przez main
+
+
+def set_pilot_factor(factor: float) -> None:
+    global PILOT_FACTOR
+    PILOT_FACTOR = max(0.5, min(3.0, float(factor)))
+
+
+def travel_seconds(distance_ly: float, distance_to_arrival_ls: float, jump_range: float = 30.0,
+                   calibrated: bool = True) -> float:
+    """Czas od odlotu do zadokowania u kupca — podstawa rankingu CR/H (czas to pieniądz).
+
+    calibrated=True: ogólny szacunek × Twoje tempo z journala; False: sam szacunek (do kalibracji).
+    """
     jumps = 0 if distance_ly < 0.5 else math.ceil(distance_ly / max(jump_range, 5.0))
-    return JUMP_SECONDS * jumps + supercruise_seconds(distance_to_arrival_ls) + DOCKING_SECONDS
+    base = JUMP_SECONDS * jumps + supercruise_seconds(distance_to_arrival_ls) + DOCKING_SECONDS
+    return base * (PILOT_FACTOR if calibrated else 1.0)
 
 
 def _parallel_candidates(jobs: list[dict], reference_system: str, market_filter, max_ly: float,
@@ -815,6 +828,7 @@ class Hop:
     distance: float = 0.0
     src_updated_at: float = 0.0   # epoch s — kiedy Spansh ostatnio widział ceny stacji kupna
     dst_updated_at: float = 0.0   # … i stacji sprzedaży
+    dst_ls: float = 0.0           # odległość stacji celu od gwiazdy (ls), gdy znana (szybka trasa / Ardent)
 
 
 @dataclass

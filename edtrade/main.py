@@ -17,10 +17,11 @@ from .watcher import JournalWatcher
 from .filters import filter_from_config
 from .trade import market_from_market_json, nearby_candidates_from_market, rank_trades, Hop, TradeRoute
 from .trade import (TradeEngine, ship_needs_large_pad, get_system_info, search_stations, find_material_traders,
-                    get_station_market, age_hours,
+                    get_station_market, age_hours, travel_seconds,
                     find_mining_hotspots, find_mineral_buyers)
 from .overlay import TradeOverlay, compact_cr
 from .session import SessionLedger
+from .pilot import PilotCalibration
 from . import assess, verify
 from . import trade as trade_module
 from datetime import datetime, timezone
@@ -192,6 +193,10 @@ class EDTradeOverlayApp:
         self._cargo: list[dict] = []
         self._ship_large_pad = False
         self.session = SessionLedger()
+        self.pilot = PilotCalibration()
+        trade_module.set_pilot_factor(self.pilot.factor)
+        if self.panel is not None:
+            self.panel.show_pilot(self.pilot.describe())
         self._copied_system = ""
         self._live_market = None
         self._dock_generation = 0
@@ -292,6 +297,20 @@ class EDTradeOverlayApp:
         if not getattr(route, '_live_check', None):
             self._verify_live()  # rynek na żywo mógł przyjść przed końcem liczenia Spansh
 
+    def _calibrate(self, trip) -> None:
+        """Realny czas lotu hopu vs ogólny szacunek → Twoje tempo (mnożnik czasu w rankingach CR/H)."""
+        if not trip:
+            return
+        hop, bought_at, docked_at = trip
+        actual = (docked_at - bought_at).total_seconds()
+        estimate = travel_seconds(hop.distance, hop.dst_ls, float(self.trade_engine.ly_per or 30.0), calibrated=False)
+        if self.pilot.add(actual, estimate, f"{hop.source_system} → {hop.destination_system}"):
+            trade_module.set_pilot_factor(self.pilot.factor)
+            logger.info("Kurs %s: %.0f s (szacunek %.0f s) — tempo %s", hop.destination_system, actual, estimate,
+                        self.pilot.describe())
+        if self.panel is not None:
+            self.panel.show_pilot(self.pilot.describe())
+
     def _current_target(self, route) -> tuple[str, str]:
         """(system, stacja), do których trzeba teraz lecieć: cel bieżącego hopu (checklista), inaczej cel trasy."""
         if route is None or route.error:
@@ -328,6 +347,7 @@ class EDTradeOverlayApp:
     def _feed_checklist(self, event: dict) -> None:
         if self.checklist is None or not self.checklist.on_event(event):
             return
+        self._calibrate(self.checklist.pop_trip())
         logger.info("Checklista: hop %d/%d %s", self.checklist.hop_index + 1,
                     len(self.checklist.hops), self.checklist.status_text())
         if self.overlay:
@@ -569,7 +589,8 @@ class EDTradeOverlayApp:
         t = best[0]
         name = self._commodity_names.get(t.commodity.lower(), t.commodity)
         hop = Hop(market.system_name, market.station_name, t.sell_system, t.sell_station, name, t.units, t.buy_price,
-                  t.sell_price, t.total_profit, t.distance, _epoch(market.updated_at), _epoch(t.updated_at))
+                  t.sell_price, t.total_profit, t.distance, _epoch(market.updated_at), _epoch(t.updated_at),
+                  t.distance_to_arrival)
         return TradeRoute(source_system=market.system_name, source_station=market.station_name,
                           destination_system=t.sell_system, destination_station=t.sell_station, buy_item=name,
                           buy_quantity=t.units, buy_price=t.buy_price, sell_price=t.sell_price,
