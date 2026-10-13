@@ -18,7 +18,8 @@ from .filters import filter_from_config
 from .trade import market_from_market_json
 from .trade import (TradeEngine, ship_needs_large_pad, get_system_info, search_stations, find_material_traders,
                     find_mining_hotspots, find_mineral_buyers)
-from .overlay import TradeOverlay
+from .overlay import TradeOverlay, compact_cr
+from .session import SessionLedger
 from .panel import TradePanel
 from .window_watch import get_active_window
 from . import market_cache
@@ -142,6 +143,7 @@ class EDTradeOverlayApp:
             on_market=self._on_market,
             on_materials=self._on_materials,
             on_trade=self._on_trade,
+            on_session=self._on_session,
         )
         self._dock_count = 0
         self._last_system = ""
@@ -154,6 +156,7 @@ class EDTradeOverlayApp:
         self._commodity_ids: dict[int, str] = {}
         self._cargo: list[dict] = []
         self._ship_large_pad = False
+        self.session = SessionLedger()
 
         # Podłącz callback pollingu do overlaya
         if self.overlay:
@@ -255,8 +258,29 @@ class EDTradeOverlayApp:
         if self.panel is not None:
             self.panel.show_route(self.checklist.route)
 
+    def _publish_session(self) -> None:
+        """Podsumowanie sesji → panel (strona SESJA) i strona rotacji paska."""
+        summary = self.session.summary()
+        if self.panel is not None:
+            self.panel.show_session(summary)
+        if self.overlay and summary.sells:
+            self.overlay.register_page('session', lambda: self._session_bar_text())
+
+    def _session_bar_text(self) -> str:
+        s = self.session.summary()
+        per_hour = s.profit_per_hour()
+        return (f"SESJA: ZYSK {compact_cr(s.profit)} CR" + (f" · {compact_cr(per_hour)} CR/H" if per_hour else "")
+                + f"\n{len(s.sells)} SPRZEDAŻY · {s.tons_sold:,} T")
+
+    def _on_session(self, event: dict):
+        """LoadGame — nowa sesja gry, liczniki od zera."""
+        if self.session.on_event(event):
+            self._publish_session()
+
     def _on_trade(self, event: dict):
         """MarketBuy/MarketSell — odhaczanie kroków; po ukończeniu trasy od razu następna z bieżącej stacji."""
+        if self.session.on_event(event):
+            self._publish_session()
         was_finished = self.checklist is None or self.checklist.finished
         self._feed_checklist(event)
         if not was_finished and self.checklist.finished and "/" in self._last_system:
@@ -267,6 +291,7 @@ class EDTradeOverlayApp:
 
     def _on_docked(self, event: dict):
         """Reaguje na event Docked — wylicza najlepszą trasę."""
+        self.session.on_event(event)  # stacja dla kolejnych transakcji w podsumowaniu
         system = event.get("StarSystem", "")
         station = event.get("StationName", "")
 

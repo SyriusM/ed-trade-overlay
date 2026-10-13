@@ -36,6 +36,7 @@ PAGE_HINTS = {
     'Materiały': 'Najbliżsi handlarze materiałów. Dwuklik: kopiuj system.',
     'Mining': 'Gdzie kopać (hotspoty) i gdzie sprzedać. Dwuklik: kopiuj system.',
     'Blueprinty': 'Czego brakuje do ulepszenia — stan materiałów z journala.',
+    'Sesja': 'Zarobki z tej sesji gry (od uruchomienia gry), liczone z journala. Prawy klik: rynek stacji.',
     'Ustawienia': 'Filtry rynków, wygląd paska i panelu. Zapisz, żeby zachować.',
 }
 PAD_FILTER_LABELS = {'auto': 'Automatycznie (ze statku)', 'large': 'Tylko pad L', 'all': 'Wszystkie pady'}
@@ -378,6 +379,26 @@ class TradePanel:
             ('need', 'Potrzeba', 90, 'e'), ('have', 'Masz', 80, 'e'), ('missing', 'Brakuje', 90, 'e'),
             ('hint', 'Gdzie zdobyć', 260, 'w')], height=16)
         self.eng_table.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
+
+        # SESJA — zarobki z bieżącej sesji gry (jak Credit/Summary w TCE)
+        self.tab_session = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_session, text='Sesja')
+        self._session_lock = threading.Lock()
+        self._session_summary = None
+        self._session_names: dict[str, str] = {}
+        tce.SectionHeader(self.tab_session, 'Podsumowanie sesji', self.fonts).pack(fill=tk.X, padx=10, pady=(10, 2))
+        self.session_grid = tce.KeyValueGrid(self.tab_session, [
+            ('time', 'Czas sesji'), ('profit', 'Zysk'), ('per_hour', 'Zysk na godzinę'),
+            ('sold', 'Sprzedano'), ('spent', 'Wydano na towar'), ('best', 'Najlepszy kurs')], self.fonts)
+        self.session_grid.pack(fill=tk.X, padx=10, pady=(2, 6))
+        self.session_header = tce.SectionHeader(self.tab_session, 'Transakcje', self.fonts)
+        self.session_header.pack(fill=tk.X, padx=10, pady=(8, 2))
+        self.session_table = tce.DataTable(self.tab_session, [
+            ('time', 'Czas', 70, 'center'), ('kind', 'Typ', 90, 'w'), ('commodity', 'Towar', 220, 'w'),
+            ('count', 'Ilość', 70, 'e'), ('price', 'Cena/t', 90, 'e'), ('total', 'Wartość', 110, 'e'),
+            ('profit', 'Zysk', 110, 'e'), ('station', 'Stacja', 260, 'w')], height=12)
+        self.session_table.pack(fill=tk.BOTH, expand=True, padx=10, pady=(2, 10))
+        self._session_tick()
         # Start z mainloopa: after() z watku roboczego dziala tylko gdy mainloop juz chodzi
         self.window.after(200, self._start_engineering_data_load)
 
@@ -464,7 +485,8 @@ class TradePanel:
         self._toast_job = None
         saved_page = str(self.user_config.get('panel_page', ''))  # odczyt PRZED nawigacją — ona nadpisuje panel_page
         self.nav = tce.GroupedNavBar(self.window, self.notebook, self.fonts, [
-            ('Handel', [self.tab_route, self.tab_nearby, self.tab_overview, self.tab_market, self.tab_commodity]),
+            ('Handel', [self.tab_route, self.tab_nearby, self.tab_overview, self.tab_market, self.tab_commodity,
+                        self.tab_session]),
             ('Nawigacja', [self.tab_journey, self.tab_system]),
             ('Inżynieria', [self.tab_materials, self.tab_mining, self.tab_engineering]),
             ('Ustawienia', [self.tab_settings]),
@@ -631,6 +653,7 @@ class TradePanel:
         self._bind_row_actions(self.materials_table, lambda p, v: (v[1], v[0]))
         self._bind_row_actions(self.system_table, lambda p, v: (self.system_entry_var.get().strip(), v[0]))
         self._bind_row_actions(self.journey_table, lambda p, v: (v[1], ''))
+        self._bind_row_actions(self.session_table, lambda p, v: (p.system, p.station) if p and p.system else None)
 
     def _open_settings(self) -> None:
         self.nav.select_frame(self.tab_settings)
@@ -807,6 +830,57 @@ class TradePanel:
         else:
             self.commodity_header.set(f'Brak stacji, gdzie {what} {commodity} (albo nieznana nazwa)', filter_text)
         self.commodity_btn.config(state=tk.NORMAL)
+
+    def show_session(self, summary) -> None:
+        """Wolane z watku watchera; nazwy towarow (FDevIDs, cache) ladowane tutaj, nie w watku Tk."""
+        if not self._session_names:
+            try:
+                self._session_names = load_commodity_names()
+            except Exception:
+                logger.exception('Nazwy towarow dla SESJI')
+        with self._session_lock:
+            self._session_summary = summary
+        try:
+            self.window.after(0, self._render_session)
+        except Exception:
+            pass
+
+    def _session_tick(self) -> None:
+        """Czas sesji i cr/h rosną z zegarem — odświeżenie co minutę."""
+        self._render_session()
+        self.window.after(60_000, self._session_tick)
+
+    def _render_session(self) -> None:
+        with self._session_lock:
+            summary = self._session_summary
+        if summary is None or not summary.trades:
+            self.session_grid.set(time='—', profit='—', per_hour='—', sold='—', spent='—',
+                                  best='Brak transakcji w tej sesji')
+            self.session_table.set_rows([])
+            return
+        hours = summary.hours()
+        per_hour = summary.profit_per_hour()
+        best = summary.best_sale
+        name = lambda t: self._session_names.get(t.commodity.lower(), t.commodity)
+        self.session_grid.set(
+            time=f'{int(hours)}h {int(hours * 60) % 60:02d}min',
+            profit=f'{summary.profit:,} cr',
+            per_hour=f'{per_hour:,} cr/h' if per_hour else 'za mało danych',
+            sold=f'{summary.tons_sold:,} t za {summary.revenue:,} cr ({len(summary.sells)} sprzedaży)',
+            spent=f'{summary.spent:,} cr',
+            best=f'{name(best)} · {best.profit:,} cr · {best.station or "?"}' if best else '—')
+        trades = list(reversed(summary.trades))  # najnowsze na gorze
+        rows, sorts, tags = [], [], []
+        for t in trades:
+            sell = t.kind == 'sell'
+            rows.append((t.timestamp.astimezone().strftime('%H:%M'), 'Sprzedaż' if sell else 'Kupno', name(t),
+                         f'{t.count:,}', f'{t.price:,}', f'{t.total:,}', f'{t.profit:+,}' if sell else '',
+                         f'{t.system} · {t.station}' if t.station else '?'))
+            sorts.append({'time': t.timestamp, 'count': t.count, 'price': t.price, 'total': t.total,
+                          'profit': t.profit if sell else 0})
+            tags.append(('good' if t.profit > 0 else 'bad') if sell else 'dim')
+        self.session_table.set_rows(rows, sort_values=sorts, tags=tags, payloads=trades)
+        self.session_header.set(f'Transakcje ({len(trades)})')
 
     def show_route(self, route) -> None:
         """Wolane z watku watchera (nowa trasa albo zmiana checklisty). Stan pod lockiem, render w watku Tk."""
