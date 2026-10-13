@@ -3,6 +3,15 @@ name = "ed-trade-overlay"
 version = "0.1.0"
 description = "Overlay nad Elite Dangerous — najlepsza trasa handlowa z aktualnej stacji"
 requires-python = ">=3.12"
+dependencies = ["requests"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+eddn = ["pyzmq"]  # ceny na żywo z EDDN (opcjonalnie)
 
 [project.scripts]
 edto = "edtrade.main:main"
+
+[tool.pytest.ini_options]
+# test_gui_brief.py to ręczny test na pulpicie autora (KDE, DISPLAY :0) — nie dla CI
+addopts = "-q --ignore=test_gui_brief.py"
