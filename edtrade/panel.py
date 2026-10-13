@@ -17,7 +17,7 @@ from .config import load_user_config, save_user_config
 from . import materials as mats
 from . import tce_theme as tce
 from .checklist import load_commodity_names
-from . import assess
+from . import assess, clipboard
 from . import trade as trade_mod
 from .filters import filter_from_config
 from .hotkeys import DEFAULT_MODIFIER, MODIFIERS, PANEL_PAGES, slot_geometry, slots_from_config
@@ -863,8 +863,8 @@ class TradePanel:
 
     def copy_system(self, system: str) -> None:
         """Nazwa systemu do schowka — w grze: mapa galaktyki → pole wyszukiwania → Ctrl+V."""
-        self.window.clipboard_clear()
-        self.window.clipboard_append(system)
+        used = clipboard.copy(system, self.window)
+        logger.info("Schowek (%s): %s", ", ".join(used) or "brak", system)
         self.toast(f'Skopiowano „{system}” — wklej w wyszukiwarce mapy galaktyki (Ctrl+V)')
 
     def show_market_of(self, system: str, station: str) -> None:

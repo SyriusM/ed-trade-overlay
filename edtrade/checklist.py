@@ -92,8 +92,10 @@ class RouteChecklist:
         self._trip: Optional[tuple] = None  # (hop, zakup, dokowanie w celu) — do kalibracji tempa
         self._reset_steps()
         # Zakup często dzieje się, zanim Spansh policzy trasę (40-180 s) — startowy stan z ładowni
+        self._from_cargo = False
         if self.hop and cargo:
             self.bought = sum(int(c.get("Count") or 0) for c in cargo if self._matches(c.get("Name", "")))
+            self._from_cargo = self.bought > 0
         self._sync_route()
 
     def _reset_steps(self) -> None:
@@ -107,15 +109,14 @@ class RouteChecklist:
         return None if self.finished else self.hops[self.hop_index]
 
     def _matches(self, journal_type: str) -> bool:
+        """Towar z journala (symbol, np. "lowtemperaturediamond") należy do ładunku hopu? Porównanie po nazwie
+        wyświetlanej (FDevIDs) ORAZ po znormalizowanym symbolu — nazwy Spansh bywają inne (liczba mnoga itp.)."""
         if not self.hop or not journal_type:
             return False
-        display = self.names.get(journal_type.lower())
-        for target in self.hop.names:  # cały ładunek hopu, nie tylko główny towar
-            if display and display.lower() == target.lower():
-                return True
-            if not display and _norm(journal_type) == _norm(target):
-                return True
-        return False
+        display = self.names.get(journal_type.lower(), "")
+        keys = {_norm(journal_type), _norm(display)} - {""}
+        return any(_norm(target) in keys or (display and display.lower() == target.lower())
+                   for target in self.hop.names)
 
     def at_destination(self) -> bool:
         hop = self.hop
@@ -157,16 +158,37 @@ class RouteChecklist:
                 return True
             return False
         if event == "MarketBuy" and self._matches(ev.get("Type", "")):
+            if self._from_cargo and ts is not None and (ts - self.created_at).total_seconds() <= 2:
+                # Ten zakup już jest w ładowni, z której policzono stan startowy — nie licz go drugi raz
+                self._from_cargo = False
+                self.last_buy_ts = ts
+                return False
             self.bought += int(ev.get("Count") or 0)
             self.last_buy_ts = ts
             return True
-        if event == "MarketSell" and self._matches(ev.get("Type", "")) and self.at_destination():
+        if event == "MarketSell" and self._matches(ev.get("Type", "")):
+            # Sprzedaż towaru hopu kończy hop także poza planowanym celem (gracz sprzedał gdzie indziej)
             self.arrived = True
             self.sold += int(ev.get("Count") or 0)
-            if self.sold >= self.bought:
+            amount = self.hop.amount or 0
+            if self.sold >= self.bought or (amount and self.sold >= amount):
                 self._advance()
             return True
         return False
+
+    def on_cargo(self, inventory: list[dict]) -> bool:
+        """Cargo.json po transakcji: towaru hopu już nie ma w ładowni, a coś sprzedano → hop zakończony.
+
+        Zabezpiecza przed zawieszeniem, gdy licznik "kupione" się rozjechał (np. zakup policzony raz z ładowni
+        przy tworzeniu trasy i drugi raz z MarketBuy w tej samej sekundzie)."""
+        if self.finished or not self.sold:
+            return False
+        held = sum(int(c.get("Count") or 0) for c in inventory if self._matches(c.get("Name", "")))
+        if held:
+            return False
+        self._advance()
+        self._sync_route()
+        return True
 
     def pop_trip(self) -> Optional[tuple]:
         """Zakończony lot hopu (hop, czas zakupu, czas dokowania w celu) — raz, potem None."""
