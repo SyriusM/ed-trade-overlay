@@ -16,7 +16,7 @@ from pathlib import Path
 from .watcher import JournalWatcher
 from .filters import filter_from_config
 from .trade import (TradeEngine, ship_needs_large_pad, get_system_info, search_stations, find_material_traders,
-                    find_mining_hotspots, find_mineral_buyers)
+                    find_mining_hotspots, find_mineral_buyers, get_station_market, apply_live_market)
 from .overlay import TradeOverlay
 from .panel import TradePanel
 from .window_watch import get_active_window
@@ -391,6 +391,35 @@ class EDTradeOverlayApp:
             )
         except Exception:
             logger.exception("Błąd w _on_market")
+        try:
+            self._check_route_against_market(event)
+        except Exception:
+            logger.exception("Błąd weryfikacji trasy z rynkiem")
+
+    def _check_route_against_market(self, event: dict) -> None:
+        """Rynek z gry ma pierwszeństwo przed Spansh: gdy gracz otworzy rynek w źródle bieżącego hopu,
+        ładunek hopu liczymy od nowa z tego, co faktycznie jest na stanie (Spansh bywa nieaktualny)."""
+        cl = self.checklist
+        if cl is None or cl.finished or cl.arrived:
+            return
+        hop = cl.hop
+        here = (event.get("StarSystem", "").lower(), event.get("StationName", "").lower())
+        if here != (hop.source_system.lower(), hop.source_station.lower()):
+            return
+        data = market_cache._load_market_json(self.watcher.journal_dir / "Market.json")
+        if not data or data.get("MarketID") != event.get("MarketID"):
+            return
+        dest = get_station_market(hop.destination_system, hop.destination_station)
+        self._sync_credits()
+        if not self._commodity_names:
+            self._commodity_names = load_commodity_names()
+        if apply_live_market(cl.route, cl.hop_index, data.get("Items", []), dest.imports,
+                             int(self.trade_engine.capacity), self.trade_engine.capital, self._commodity_names):
+            cl._sync_route()
+            if self.overlay:
+                self.overlay.update_route(cl.route)
+            if self.panel is not None:
+                self.panel.show_route(cl.route)
 
     def _on_materials(self, event: dict):
         """Reaguje na event Materials (start gry) — stan materiałów do zakładki Inżynieria."""
