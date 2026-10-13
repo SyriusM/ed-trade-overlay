@@ -413,14 +413,46 @@ class TradePanel:
 
         self.settings_status_var = tk.StringVar(value='')
         ttk.Label(self.settings_frame, textvariable=self.settings_status_var).grid(row=13, column=1, sticky='w', pady=4)
+        self._autosave_job = None
+        self._watch_settings(self.settings_frame)
 
         tce.uppercase_static_texts(self.window)
         self._render_context()
         self.nav = tce.NavBar(self.window, self.notebook, self.fonts, on_change=self.title_bar.set_title)
         self.nav.pack(fill=tk.X, padx=8, pady=(6, 0), before=self.notebook)
 
+    def _watch_settings(self, frame: tk.Misc) -> None:
+        """Autozapis: każda zmienna podpięta pod widżet w zakładce Ustawienia zapisuje config po zmianie.
+
+        Działa dla każdego nowego pola dodanego do settings_frame — wystarczy dopisać klucz w save_settings."""
+        own_vars = {str(v): v for v in vars(self).values() if isinstance(v, tk.Variable)}
+        watched = set()
+        widgets = [frame]
+        while widgets:
+            widget = widgets.pop()
+            widgets.extend(widget.winfo_children())
+            for option in ('textvariable', 'variable'):
+                try:
+                    name = str(widget.cget(option))
+                except tk.TclError:
+                    continue
+                var = own_vars.get(name)
+                if var is not None and name not in watched and var is not self.settings_status_var:
+                    watched.add(name)
+                    var.trace_add('write', lambda *_: self._schedule_autosave())
+
+    def _schedule_autosave(self) -> None:
+        """Odczekaj chwilę po ostatniej zmianie (suwak, pisanie), żeby nie zapisywać pliku przy każdym kroku."""
+        if self._autosave_job is not None:
+            self.window.after_cancel(self._autosave_job)
+        self._autosave_job = self.window.after(500, self._autosave)
+
+    def _autosave(self) -> None:
+        self._autosave_job = None
+        self.save_settings()
+
     def _appearance_preview(self, var: tk.DoubleVar, value_label: ttk.Label) -> None:
-        """Suwaki CONTROL działają na żywo; zapis do configu dopiero przyciskiem ZAPISZ."""
+        """Suwaki CONTROL działają na żywo; zapis do configu automatycznie (autozapis Ustawień)."""
         value_label.configure(text=f'{var.get():.2f}')
         if var is self.panel_scale_var:
             self.fonts.set_scale(var.get())

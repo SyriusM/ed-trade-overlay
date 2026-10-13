@@ -9,6 +9,7 @@ Klucze bar_alpha / bar_font_scale / panel_font_scale = wygląd (CONTROL jak w TC
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -60,5 +61,8 @@ def save_user_config(config: dict[str, Any], path: Path | None = None) -> None:
     """Zapisz config do pliku JSON, tworząc katalog jeśli trzeba."""
     cfg_path = path if path is not None else CONFIG_PATH
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(cfg_path, 'w', encoding='utf-8') as f:
+    # Zapis przez plik tymczasowy + replace: przerwany zapis nie zostawi uciętego JSON-a (który przy starcie = domyślne)
+    tmp_path = cfg_path.with_name(cfg_path.name + '.tmp')
+    with open(tmp_path, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
+    os.replace(tmp_path, cfg_path)
