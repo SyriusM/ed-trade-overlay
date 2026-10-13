@@ -806,18 +806,18 @@ class TradeEngine:
         for line in lines:
             line_stripped = line.strip()
 
-            # Parse: Buy ITEM xN at Station (price)
-            m = re.match(r"Buy\s+(\S.*?)\s+x(\d+)\s+at\s+(.+?)\s+\((\d+)[,]?\d*\)", line_stripped)
+            # Parse: Buy ITEM xN at Station (price[cr])
+            m = re.match(r"Buy\s+(\S.*?)\s+x(\d+)\s+at\s+(.+?)\s+\(([\d,]+)cr?\)", line_stripped)
             if m:
                 buy_item = m.group(1).strip()
                 buy_qty = int(m.group(2))
-                buy_price = int(m.group(3).replace(",", ""))
+                buy_price = int(m.group(4).replace(",", ""))
                 cargo = buy_qty
                 continue
 
-            # Parse: Sell ITEM xN at Station (price), profit X
+            # Parse: Sell ITEM xN at Station (price[cr]), profit X[cr] (profit może być ujemny)
             m = re.match(
-                r"Sell\s+(\S.*?)\s+x(\d+)\s+at\s+(.+?)\s+\((\d+)[,]?\d*\),\s+profit\s+(\d+)[,]?\d*",
+                r"Sell\s+(\S.*?)\s+x(\d+)\s+at\s+(.+?)\s+\(([\d,]+)cr?\),\s+profit\s+(-?[\d,]+)cr?",
                 line_stripped,
             )
             if m:
@@ -839,8 +839,8 @@ class TradeEngine:
                 if m:
                     hops += int(m.group(1))
 
-            # Parse total profit line
-            m = re.search(r"profit\s+([\d,]+)", line_stripped, re.IGNORECASE)
+            # Parse total profit line (profit może być ujemny)
+            m = re.search(r"profit\s+(-?[\d,]+)", line_stripped, re.IGNORECASE)
             if m:
                 profit = int(m.group(1).replace(",", ""))
 

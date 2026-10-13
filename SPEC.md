@@ -653,3 +653,12 @@ Pomiar w mainloop: pole Mining 'Platinum' ≠ pole Ustawień '' (różne obiekty
 **KRYTYCZNE — zakładka Mining miała od kroku 3C puste pole minerału i martwy przycisk "Odśwież"** (kolizja nazwy z Ustawieniami); wcześniejsze testy 3C-3 nie dotykały Mining, więc nie wyłapały.
 **PODSUMOWANIE UI 4A-4E:** X panelu = minimalizacja (4A); wszystkie 4 zakładki z siecią (Journey, Materiały, System, Mining) liczą w wątku roboczym, UI i pasek nie zamarzają (4B-4E); naprawiona kolizja zmiennej Mining.
 Zostaje: zakładka Kolonizacja (pkt 6, zaparkowana), test w grze + odczyt prawdziwej klasy okna gry, ewentualnie `kdotool` w wątku (jeśli pasek będzie się przycinał), obsługa `after()` na zamkniętym oknie (połknięty wyjątek w workerach).
+
+## Porządki (2026-10-13, przegląd Claude'a reszty projektu)
+Przegląd całego repo na życzenie usera ("sprawdź resztę projektu, co jeszcze do zrobienia") wykrył i naprawił 3 realne bugi w `edtrade/trade.py::_parse_output` (tekstowy parser lokalnego Trade Dangerous — ścieżka zapasowa, OBECNIE nieużywana, bo backend to Spansh, ale test ją pokrywa i bug był realny):
+1. Regex `Buy`/`Sell` wymagał cyfry bezpośrednio przed `)` — ceny z sufiksem `cr` (np. `130cr)`) nigdy się nie parsowały, `buy_item`/`sell_price` zawsze zostawały puste/zerowe.
+2. `buy_price` było czytane z `m.group(3)` (nazwa stacji!) zamiast `m.group(4)` (cena) — po naprawie (1) powyższy bug by się ujawnił jako `ValueError` przy `int()` na nazwie stacji.
+3. Regex zysku nie dopuszczał znaku `-` — strata (np. `profit -20cr`) zapisywała się jako `0`.
+Wszystkie 3 naprawione, `test_trade.py::TestParseOutput` (4 testy) teraz przechodzi w całości (wcześniej 3/4 fail). `test_search_sol` pomijany w tym kontenerze — blokada proxy do zewnętrznego API, nie bug w kodzie.
+Dodatkowo: `requirements.txt` mówił "brak zależności, tylko stdlib", ale `trade.py` realnie importuje `requests` — naprawione (`requests` dodane do pliku), bo świeży `pip install -r requirements.txt` kończyłby się `ModuleNotFoundError` przy pierwszym wywołaniu Spansh/Ardent.
+Niezmienione (poza zakresem tej sesji, wymaga decyzji/testu w grze — patrz wyżej): zakładka Kolonizacja, weryfikacja `game_window_class`, fallback lokalnego TD (brak `sqlalchemy`), integracja cache↔trade.py (świadomie wstrzymana).
