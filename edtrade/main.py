@@ -29,7 +29,10 @@ from .eddn import EDDNListener
 from . import assess, verify
 from . import trade as trade_module
 from datetime import datetime, timezone
-from .panel import TradePanel
+from .bottom_bar import BottomBar
+from .destination import get_destination_info
+from .hotkeys import PANEL_PAGES, HotkeyManager
+from .panel import PANEL_WINDOW_CLASS, TradePanel
 from .window_watch import get_active_window
 from . import market_cache
 from .market_cache import init_market_cache
@@ -161,14 +164,16 @@ class EDTradeOverlayApp:
         trade_module.set_security_prefs(float(self.user_config.get('security_weight', 0.5)),
                                         bool(self.user_config.get('avoid_low_security', False)))
         self.overlay = TradeOverlay() if self._show_overlay else None
+        self.bottom_bar = BottomBar(self.overlay.master, self.overlay.fonts) if self.overlay is not None else None
         if self.overlay is not None:
-            self.overlay.apply_appearance(float(self.user_config.get('bar_alpha', 0.75)),
-                                          float(self.user_config.get('bar_font_scale', 1.0)))
+            self._apply_appearance(float(self.user_config.get('bar_alpha', 0.75)),
+                                   float(self.user_config.get('bar_font_scale', 1.0)))
         self.panel = None
         if self.overlay is not None and not args.no_panel:
             try:
                 self.panel = TradePanel(self.overlay.master, user_config=self.user_config,
-                                        on_appearance_change=self.overlay.apply_appearance,
+                                        on_appearance_change=self._apply_appearance,
+                                        bar_margins=self._bar_margins,
                                         on_verdict_display_change=self.overlay._refresh_now)
                 logger.info("TradePanel utworzony (zakładki: System/Materiały/Mining/Journey)")
             except Exception:
@@ -193,7 +198,6 @@ class EDTradeOverlayApp:
         self._last_active_class: Optional[str] = None
         self._bar_visible: bool = True
         self._focus_warned = False
-        self._hidden_bars: list = []
         self.checklist: Optional[RouteChecklist] = None
         self._commodity_names: dict[str, str] = {}
         self._commodity_ids: dict[int, str] = {}
@@ -222,12 +226,65 @@ class EDTradeOverlayApp:
         self._refresh_lock = threading.Lock()
         if self.panel is not None:
             self.panel.on_refresh = self.refresh
+        self._destination_key: Optional[tuple] = None
+        self.hotkeys: Optional[HotkeyManager] = None
+        if self.overlay is not None:
+            self.hotkeys = HotkeyManager(self.overlay.master, self.user_config, self._hotkey_actions())
+            if self.panel is not None:
+                self.hotkeys.bind_tk(self.panel.window)
 
         # Podłącz callback pollingu do overlaya
         if self.overlay:
             self.trade_engine.set_polling_callback(
                 lambda elapsed: self.overlay.set_polling_status(elapsed)
             )
+
+    def _apply_appearance(self, alpha: float, font_scale: float) -> None:
+        """CONTROL: przezroczystość i skala — wspólne dla górnego i dolnego paska."""
+        self.overlay.apply_appearance(alpha, font_scale)
+        if self.bottom_bar is not None:
+            self.bottom_bar.apply_appearance(alpha, font_scale)
+
+    def _bar_margins(self) -> tuple[int, int]:
+        """Wysokość widocznych pasków (góra, dół) — panel otwierany skrótem ich nie zasłania."""
+        top = self.overlay._height if self.overlay and self.overlay.slider.visible else 0
+        bottom = self.bottom_bar.height() if self.bottom_bar and self.bottom_bar.slider.visible else 0
+        return top, bottom
+
+    def _hotkey_actions(self) -> dict:
+        actions = {'top_bar': lambda _slot: self.overlay.slider.toggle_user()}
+        if self.bottom_bar is not None:
+            actions['bottom_bar'] = lambda _slot: self.bottom_bar.slider.toggle_user()
+        if self.panel is not None:
+            for page in PANEL_PAGES:
+                actions[page] = lambda slot, page=page: self.panel.toggle_page(page, slot)
+        return actions
+
+    def _update_destination(self) -> None:
+        """Karta stacji docelowej bieżącego hopu na dolnym pasku (sieć w wątku roboczym)."""
+        if self.bottom_bar is None:
+            return
+        hop = None
+        if self.checklist is not None and not self.checklist.finished and self.checklist.hops:
+            hop = self.checklist.hops[min(self.checklist.hop_index, len(self.checklist.hops) - 1)]
+        key = (hop.destination_system, hop.destination_station) if hop else None
+        if key == self._destination_key:
+            return
+        self._destination_key = key
+        if hop is None:
+            self.overlay.master.after(0, self.bottom_bar.show_waiting)
+            return
+        self.overlay.master.after(0, self.bottom_bar.show_loading, *key)
+
+        def work():
+            info = get_destination_info(hop.destination_system, hop.destination_station,
+                                        system_id64=getattr(hop, '_destination_id64', ''),
+                                        distance_ly=hop.distance or None,
+                                        market_updated_ts=getattr(hop, '_destination_market_ts', 0))
+            if self._destination_key == key:
+                self.overlay.master.after(0, self.bottom_bar.show_destination, info)
+
+        threading.Thread(target=work, daemon=True, name='destination').start()
 
     def _on_loadout(self, event: dict):
         """Reaguje na event Loadout — aktualizuje pojemność i MaxJumpRange.
@@ -329,6 +386,7 @@ class EDTradeOverlayApp:
             self.overlay.update_route(route)
         if self.panel is not None:
             self.panel.show_route(route)
+        self._update_destination()
         self._copied_system = ""  # nowa trasa → skopiuj cel nawet, jeśli to ten sam system
         self._copy_target(route)
         if not getattr(route, '_live_check', None):
@@ -403,6 +461,7 @@ class EDTradeOverlayApp:
             self.overlay._refresh_now()
         if self.panel is not None:
             self.panel.show_route(self.checklist.route)
+        self._update_destination()
         self._copy_target(self.checklist.route)  # następny hop → nowy cel w schowku
 
     def _publish_session(self) -> None:
@@ -761,27 +820,30 @@ class EDTradeOverlayApp:
                 self.panel.refresh_finished()
 
     def _apply_bar_visibility(self, window_class: Optional[str]) -> None:
-        """Gdy włączone bar_only_when_game_focused: pasek widoczny tylko, gdy aktywne okno ma klasę game_window_class."""
+        """Gdy włączone bar_only_when_game_focused: paski widoczne tylko, gdy fokus ma gra (albo panel aplikacji).
+
+        To drugi, niezależny od skrótów powód widoczności (SlidingBar.auto_visible) — pasek schowany
+        skrótem zostaje schowany, gdy gra wraca na wierzch."""
         if self.overlay is None:
             return
         if not self.user_config.get('bar_only_when_game_focused', False):
-            if not self._bar_visible:
-                self._set_bars_visible(True)
-                self._bar_visible = True
-                logger.info("Pasek: przywrócony (tryb 'tylko przy grze' wyłączony)")
-            return
-        if window_class is None:
+            want_visible = True
+        elif window_class is None:
             if not self._focus_warned:
                 logger.warning("Pasek tylko przy grze: nie da się odczytać aktywnego okna (kdotool) — pasek zostaje widoczny")
                 self._focus_warned = True
             return
-        game_class = self.user_config.get('game_window_class', '')
-        want_visible = bool(game_class) and window_class == game_class
+        else:
+            game_class = self.user_config.get('game_window_class', '')
+            ours = window_class.lower() == PANEL_WINDOW_CLASS.lower()
+            want_visible = ours or (bool(game_class) and window_class == game_class)
         if want_visible == self._bar_visible:
             return
         self._bar_visible = want_visible
-        self._set_bars_visible(want_visible)
-        logger.info("Pasek: %s (aktywne okno: %r)", "pokazany" if want_visible else "ukryty", window_class)
+        for bar in (self.overlay, self.bottom_bar):
+            if bar is not None:
+                bar.slider.set_auto(want_visible)
+        logger.info("Paski: %s (aktywne okno: %r)", "pokazane" if want_visible else "ukryte", window_class)
 
     def _poll_active_window(self) -> None:
         """Co sekundę odczytaj klasę aktywnego okna; zaloguj tylko ZMIANĘ (bez tytułów — mogą zawierać prywatne dane)."""
@@ -798,22 +860,6 @@ class EDTradeOverlayApp:
             if self.overlay is not None:
                 self.overlay.master.after(1000, self._poll_active_window)
 
-    def _set_bars_visible(self, visible: bool) -> None:
-        """Pokaż/ukryj pasek i każde inne okno-nakładkę (Toplevel z overrideredirect, np. dolny pasek); panel zostaje.
-
-        Przy chowaniu zapamiętuje, co było widoczne, i tylko to przywraca — zamknięte wysuwane okna nie wyskoczą."""
-        if visible:
-            for bar in self._hidden_bars:
-                if bar.winfo_exists():
-                    bar.deiconify()
-            self._hidden_bars = []
-            return
-        root = self.overlay.master
-        bars = [root] + [w for w in root.winfo_children() if hasattr(w, 'overrideredirect') and w.overrideredirect()]
-        self._hidden_bars = [bar for bar in bars if bar.state() == 'normal']
-        for bar in self._hidden_bars:
-            bar.withdraw()
-
     def run(self):
         """Uruchom aplikację."""
         logger.info("ED Trade Overlay startuje")
@@ -825,14 +871,14 @@ class EDTradeOverlayApp:
         def _signal_handler(sig, frame):
             logger.info("Sygnał %s — zamykanie", sig)
             self.watcher.stop()
+            if self.hotkeys is not None:
+                self.hotkeys.stop()
             sys.exit(0)
 
         signal.signal(signal.SIGINT, _signal_handler)
         signal.signal(signal.SIGTERM, _signal_handler)
 
         # Uruchom watchera w osobnym wątku, overlay w głównym
-        import threading
-
         watcher_thread = threading.Thread(
             target=self.watcher.run,
             args=(self.args.poll_interval,),
@@ -843,6 +889,9 @@ class EDTradeOverlayApp:
         logger.info("Watcher uruchomiony w wątku, overlay w mainloop")
         if self._show_overlay:
             self.overlay.master.after(1000, self._poll_active_window)
+            self.hotkeys.start_socket()
+            self.hotkeys.start_global_listener()
+            self.bottom_bar.slider.apply(animate=True)
             self.overlay.show()
         else:
             logger.info("Uruchomiono w trybie --no-overlay — brak okna")

@@ -6,6 +6,8 @@ Klucz bar_only_when_game_focused = czy pasek ma być widoczny tylko, gdy okno gr
 Klucze min_profit_per_t / max_data_age_days = minimalny zysk na tonę i maks. wiek cen (handel w okolicy, Towary, Mining).
 Klucze pad_filter (auto/large/all) / max_star_distance_ls (0 = bez limitu) / market_type (all/space/planetary) = filtry rynków (jak "Market minimum pad size" w TCE).
 Klucze bar_alpha / bar_font_scale / panel_font_scale = wygląd (CONTROL jak w TCE): przezroczystość paska i skale czcionek.
+Klucze hotkey_modifier / numpad_slots / global_hotkeys = skróty jak w TCE (opis w hotkeys.py): modyfikator,
+cel każdego klawisza numerycznego 1-9 (pozycja klawisza = miejsce na ekranie), globalny nasłuch pynput (auto/off).
 """
 
 import json
@@ -13,6 +15,8 @@ import logging
 import os
 from pathlib import Path
 from typing import Any
+
+from .hotkeys import DEFAULT_SLOTS
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +47,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     'avoid_low_security': False, # całkiem pomijaj stacje w systemach Low / Anarchy
     'risk_profile': 'auto',     # 'auto' / 'safe' / 'optimal' / 'risky' — jak program wybiera okazje i trasy
     'copy_target': 'station', # co kopiować: 'station', 'system' albo 'both' ("Stacja (System)")
+    'hotkey_modifier': 'Shift',
+    'numpad_slots': dict(DEFAULT_SLOTS),
+    'global_hotkeys': 'auto',
 }
 
 

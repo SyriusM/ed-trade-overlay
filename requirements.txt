@@ -1,1 +1,2 @@
 requests
+pynput  # opcjonalnie: globalne skróty (X11/XWayland), bez niego działają skróty KDE przez gniazdo

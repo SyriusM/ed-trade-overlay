@@ -13,6 +13,7 @@ from typing import Optional, Callable
 
 from . import tce_theme as tce
 from . import assess
+from .slide import SlidingBar
 from .trade import TradeRoute, age_hours
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,7 @@ class TradeOverlay:
         self._setup_window()
         self._setup_fonts()
         self._build_ui()
+        self.slider = SlidingBar(self.master, edge="top", height_fn=lambda: self._height)
 
         self.current_route: Optional[TradeRoute] = None
         self._update_pending = False
@@ -91,13 +93,15 @@ class TradeOverlay:
     def _apply_geometry(self, scale: float = 1.0):
         """Ustaw geometrię: pełna szerokość ekranu, mała wysokość u góry (rośnie ze skalą czcionki)."""
         width = self.master.winfo_screenwidth()
-        self.master.geometry(f"{width}x{round(WINDOW_HEIGHT * scale)}+0+0")
+        self._height = round(WINDOW_HEIGHT * scale)
+        self.master.geometry(f"{width}x{self._height}+0+0")
 
     def apply_appearance(self, alpha: float, font_scale: float) -> None:
         """CONTROL jak w TCE: przezroczystość i skala czcionki paska (wołane w wątku Tk)."""
         self.master.attributes("-alpha", min(1.0, max(0.2, alpha)))
         self.fonts.set_scale(font_scale)
         self._apply_geometry(font_scale)
+        self.slider.place()
 
     def _setup_fonts(self):
         fonts = tce.Fonts(self.master)
@@ -387,8 +391,8 @@ class TradeOverlay:
 
     def show(self):
         """Pokaż overlay i uruchom pętlę odświeżania."""
-        logger.info("show(): deiconify + start mainloop")
-        self.master.deiconify()
+        logger.info("show(): wysuń pasek + start mainloop")
+        self.slider.apply(animate=True)
         self._schedule_refresh()
         self.master.after(8000, self._rotate_pages)
         self.master.mainloop()
