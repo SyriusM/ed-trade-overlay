@@ -8,6 +8,7 @@ import copy
 import logging
 import re
 import threading
+from dataclasses import dataclass
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
@@ -16,6 +17,7 @@ from .config import load_user_config, save_user_config
 from . import materials as mats
 from . import tce_theme as tce
 from .checklist import load_commodity_names
+from . import assess
 from .filters import filter_from_config
 from datetime import datetime, timezone
 from .trade import age_hours as price_age_hours
@@ -26,8 +28,8 @@ from .trade import (get_system_info, search_stations, find_material_traders, fin
 COMMODITY_MODES = ('Kup', 'Sprzedaj')
 PAGE_HINTS = {
     'Trasa': 'Najlepsza trasa z bieżącej stacji — liczy się sama po dokowaniu, kroki odhaczają się z gry.',
-    'Okolica': 'Co kupić tutaj i gdzie sprzedać + Twój ładunek. Ranking waży świeżość cen (szare >1 d, czerwone >3 d). '
-               'Dwuklik: kopiuj system · prawy klik: więcej.',
+    'Okolica': '▲ OPTIMAL · ● SAFE · ▼ RISKY · ■ HOLD — jaśniej = mocniej. Klik: SWOT pod tabelą · '
+               'dwuklik: kopiuj system.',
     'Porównaj': 'Bieżąca stacja vs cel (jak Trade Overview w TCE). Otwórz z OKOLICY: prawy klik → Porównaj.',
     'Market': 'Pełny rynek jednej stacji. Wypełnia się sam po dokowaniu.',
     'Towary': 'Gdzie najtaniej kupić / najdrożej sprzedać dowolny towar. Dwuklik: kopiuj system.',
@@ -72,11 +74,14 @@ MATERIAL_HINTS = {
 }
 
 
-def _age_tag(hours) -> str:
-    """Kolor wiersza wg wieku cen: przygaszony >1 dzień, czerwony >3 dni (cena może już nie obowiązywać)."""
-    if hours is None or hours > 72:
-        return 'bad'
-    return 'dim' if hours > 24 else ''
+@dataclass
+class _CargoHere:
+    """Wiersz ładowni bez lotu (sprzedaj tu / trzymaj) — ten sam interfejs co NearbyTrade dla akcji wierszy."""
+    commodity: str
+    name: str
+    sell_system: str
+    sell_station: str
+    sell_price: int
 
 
 def _age_text(hours) -> str:
@@ -148,6 +153,7 @@ class TradePanel:
         self._nearby_meta: Optional[tuple] = None
         self._cargo_cands: list = []
         self._cargo_meta: Optional[tuple] = None
+        self._cargo_pending = False
         self.nearby_mode_var = tk.StringVar(value='per_hour')
         nearby_entry = ttk.Frame(self.tab_nearby)
         nearby_entry.pack(fill=tk.X, padx=10, pady=(10, 4))
@@ -162,17 +168,23 @@ class TradePanel:
         self.nearby_modes.pack(fill=tk.X, padx=10, pady=(4, 2))
         self.nearby_header = tce.SectionHeader(self.tab_nearby, 'Kup tutaj → sprzedaj w okolicy', self.fonts)
         self.nearby_header.pack(fill=tk.X, padx=10, pady=(6, 2))
-        trade_columns = [('commodity', 'Towar', 160, 'w'), ('buy', 'Kup', 70, 'e'), ('station', 'Sprzedaj w', 170, 'w'),
+        trade_columns = [('verdict', 'Ocena', 105, 'w'), ('commodity', 'Towar', 160, 'w'), ('buy', 'Kup', 70, 'e'), ('station', 'Sprzedaj w', 170, 'w'),
                          ('system', 'System', 140, 'w'), ('sell', 'Cena', 70, 'e'), ('per_t', 'Zysk/t', 70, 'e'),
                          ('total', 'Zysk', 100, 'e'), ('time', 'Czas', 60, 'e'), ('per_h', 'CR/H', 100, 'e'),
                          ('distance', 'Odl.', 60, 'e'), ('arrival', 'LS', 60, 'e'), ('pad', 'Pad', 40, 'center'),
                          ('age', 'Dane', 55, 'e')]
         self.nearby_table = tce.DataTable(self.tab_nearby, trade_columns, height=9)
-        self.nearby_table.pack(fill=tk.BOTH, expand=True, padx=10, pady=(2, 6))
+        self.nearby_table.pack(fill=tk.BOTH, expand=True, padx=10, pady=(2, 0))
+        # SWOT zaznaczonego wiersza (S mocne, W słabe, O szanse, T zagrożenia)
+        self.nearby_swot = tk.Label(self.tab_nearby, text='', bg=tce.BG, fg=tce.ORANGE, font=self.fonts.body_bold,
+                                    anchor='w', justify=tk.LEFT)
+        self.nearby_swot.pack(fill=tk.X, padx=12, pady=(2, 6))
+        self.nearby_swot.bind('<Configure>', lambda e: self.nearby_swot.config(wraplength=max(200, e.width - 10)))
+        self._assessments: dict[int, 'assess.Assessment'] = {}
         self.nearby_cargo_header = tce.SectionHeader(self.tab_nearby, 'Twój ładunek — gdzie sprzedać', self.fonts)
         self.nearby_cargo_header.pack(fill=tk.X, padx=10, pady=(4, 2))
         self.nearby_cargo_table = tce.DataTable(self.tab_nearby, [
-            ('commodity', 'Towar', 160, 'w'), ('units', 'Ilość', 60, 'e'), ('station', 'Sprzedaj w', 170, 'w'),
+            ('verdict', 'Ocena', 140, 'w'), ('commodity', 'Towar', 160, 'w'), ('units', 'Ilość', 60, 'e'), ('station', 'Sprzedaj w', 170, 'w'),
             ('system', 'System', 140, 'w'), ('sell', 'Cena', 70, 'e'), ('total', 'Razem', 100, 'e'),
             ('time', 'Czas', 60, 'e'), ('per_h', 'CR/H', 100, 'e'), ('distance', 'Odl.', 60, 'e'),
             ('arrival', 'LS', 60, 'e'), ('pad', 'Pad', 40, 'center'), ('age', 'Dane', 55, 'e')], height=4)
@@ -524,7 +536,8 @@ class TradePanel:
 
     def _context_changed(self, keys: set) -> None:
         self._render_context()
-        if 'cargo' in keys and hasattr(self, 'nearby_cargo_table'):
+        # Ocena ładunku zależy od ładowni, stacji (cena "sprzedaj tu") i rynku na żywo — wszystko połączone
+        if keys & {'cargo', 'station', 'live_market'} and hasattr(self, 'nearby_cargo_table'):
             self.refresh_cargo_sales()
         if 'live_market' in keys:
             # Gra zapisała Market.json — przelicz to, co dotyczy tej stacji, na dokładnych cenach
@@ -646,6 +659,8 @@ class TradePanel:
         payload = lambda attr_system, attr_station: (
             lambda p, v: (getattr(p, attr_system), getattr(p, attr_station) if attr_station else '') if p else None)
         self._bind_row_actions(self.nearby_table, payload('sell_system', 'sell_station'))
+        for table in (self.nearby_table, self.nearby_cargo_table):
+            table.tree.bind('<<TreeviewSelect>>', lambda _e, tb=table: self._show_swot(tb.selected_payload()), add='+')
         self._bind_row_actions(self.nearby_cargo_table, payload('sell_system', 'sell_station'))
         self._bind_row_actions(self.mining_buyers_table, payload('system_name', 'station_name'))
         self._bind_row_actions(self.mining_hotspots_table, payload('system_name', ''))
@@ -880,6 +895,8 @@ class TradePanel:
                           'profit': t.profit if sell else 0})
             tags.append(('good' if t.profit > 0 else 'bad') if sell else 'dim')
         self.session_table.set_rows(rows, sort_values=sorts, tags=tags, payloads=trades)
+        if self._cargo_meta is not None:
+            self._render_cargo()  # nowa cena zakupu → ocena HOLD/SELL (strata?)
         self.session_header.set(f'Transakcje ({len(trades)})')
 
     def show_route(self, route) -> None:
@@ -1107,19 +1124,42 @@ class TradePanel:
         return float(self.context()['jump_range'] or 30.0)
 
     @staticmethod
-    def _trade_row(t, names: dict, with_buy: bool) -> tuple:
+    def _trade_row(t, names: dict, with_buy: bool, verdict=None) -> tuple:
         name = names.get(t.commodity.lower(), t.commodity)
+        badge = (verdict.badge,) if verdict is not None else ('',)
         minutes = f'{int(t.travel_s // 60)}:{int(t.travel_s % 60):02d}'
         common = (t.sell_station, t.sell_system, f'{t.sell_price:,}')
         tail = (minutes, f'{t.profit_per_hour / 1e6:.1f} M', f'{t.distance:.1f}', f'{t.distance_to_arrival:,.0f}',
                 (t.pad_size or '?')[0].upper(), _data_age(t.updated_at))
         if with_buy:
-            return (name, f'{t.buy_price:,}') + common + (f'{t.profit_per_unit:,}', f'{t.total_profit:,}') + tail
-        return (name, t.units) + common + (f'{t.total_profit:,}',) + tail
+            return badge + (name, f'{t.buy_price:,}') + common + (f'{t.profit_per_unit:,}', f'{t.total_profit:,}') + tail
+        return badge + (name, t.units) + common + (f'{t.total_profit:,}',) + tail
+
+    def _remember_assessments(self, trades: list, verdicts: list) -> None:
+        for t, v in zip(trades, verdicts):
+            self._assessments[id(t)] = v
+
+    def _show_swot(self, trade) -> None:
+        verdict = self._assessments.get(id(trade)) if trade is not None else None
+        if verdict is None:
+            self.nearby_swot.config(text='')
+            return
+        names = dict(self._cargo_meta[2]) if self._cargo_meta is not None else {}
+        if self._nearby_meta is not None:
+            names.update(self._nearby_meta[3])
+        name = getattr(trade, 'name', '') or names.get(trade.commodity.lower(), trade.commodity)
+        where = f' → {trade.sell_station.upper()}' if trade.sell_station else ''
+        self.nearby_swot.config(text=f'{verdict.badge}  {name.upper()}{where}:  '
+                                     + (verdict.swot_text() or 'brak uwag').upper(),
+                                fg=tce.verdict_color(verdict.verdict, verdict.degree, tce.BG))
 
     @staticmethod
-    def _trade_sort(t) -> dict:
-        return {'buy': t.buy_price, 'sell': t.sell_price, 'per_t': t.profit_per_unit, 'total': t.total_profit,
+    def _trade_sort(t, verdict=None) -> dict:
+        # sortowanie po ocenie: OPTIMAL > SAFE > RISKY, w klasie wg stopnia
+        rank = {'optimal': 2, 'safe': 1, 'risky': 0}
+        score = (rank[verdict.verdict] + (verdict.degree if verdict.verdict != 'risky' else 1 - verdict.degree)) \
+            if verdict is not None else 0
+        return {'verdict': score, 'buy': t.buy_price, 'sell': t.sell_price, 'per_t': t.profit_per_unit, 'total': t.total_profit,
                 'time': t.travel_s, 'per_h': t.profit_per_hour, 'distance': t.distance, 'arrival': t.distance_to_arrival,
                 'units': t.units}
 
@@ -1172,9 +1212,13 @@ class TradePanel:
         if self._nearby_meta is not None:
             system_name, station_name, capacity, names, error, filter_text = self._nearby_meta
             trades = rank_trades(self._nearby_cands, mode)
-            self.nearby_table.set_rows([self._trade_row(t, names, True) for t in trades],
-                                       sort_values=[self._trade_sort(t) for t in trades], payloads=trades,
-                                       tags=[_age_tag(t.age_hours) for t in trades])
+            verdicts = assess.assess_all(trades, assess.value_for_mode(mode), capacity)
+            self._remember_assessments(trades, verdicts)
+            self.nearby_table.set_rows([self._trade_row(t, names, True, v) for t, v in zip(trades, verdicts)],
+                                       sort_values=[self._trade_sort(t, v) for t, v in zip(trades, verdicts)],
+                                       payloads=trades,
+                                       tags=[tce.verdict_tag(v.verdict, v.degree) for v in verdicts])
+            self._show_swot(trades[0] if trades else None)
             hold = f'ładownia {capacity} t' if capacity else 'ładownia 304 t (domyślnie — czekam na Loadout)'
             if error:
                 self.nearby_header.set(f'{station_name} ({system_name}) — błąd: {error}', '')
@@ -1196,7 +1240,10 @@ class TradePanel:
             self.nearby_cargo_table.set_rows([])
             self.nearby_cargo_header.set('Twój ładunek — gdzie sprzedać', 'ładownia pusta')
             return
-        if self._cargo_busy or not reference:
+        if not reference:
+            return
+        if self._cargo_busy:
+            self._cargo_pending = True  # zmiana w trakcie liczenia — przelicz po zakończeniu
             return
         self._cargo_busy = True
         self.nearby_cargo_header.set('Twój ładunek — gdzie sprzedać', f'liczę wokół {reference}...')
@@ -1204,39 +1251,95 @@ class TradePanel:
             max_ly = float(self.nearby_range_var.get().strip())
         except ValueError:
             max_ly = 40.0
+        station = ctx['station'] if ctx['system'] else ''
         threading.Thread(target=self._cargo_worker, daemon=True,
-                         args=(cargo, reference, max_ly, self._market_filter(), self._jump_range())).start()
+                         args=(cargo, reference, station, max_ly, self._market_filter(), self._jump_range())).start()
 
-    def _cargo_worker(self, cargo: list, reference: str, max_ly: float, market_filter, jump_range: float) -> None:
-        cands, error, names = [], '', {}
+    def _cargo_worker(self, cargo: list, reference: str, station: str, max_ly: float, market_filter,
+                      jump_range: float) -> None:
+        cands, error, names, here = [], '', {}, {}
         try:
             cands = cargo_candidates(cargo, reference, market_filter, max_ly, jump_range=jump_range)
             names = load_commodity_names()
         except Exception as e:
             error = str(e)
+        if station:
+            # Rynek stacji, na której stoisz (Market.json z gry albo Ardent) — porównanie "sprzedaj tu" vs "leć"
+            try:
+                market = self._market_of(reference, station)
+                for item in list(market.exports) + list(market.imports):
+                    here.setdefault(item.name.lower(), item)
+                for item in market.imports:
+                    here[item.name.lower()] = item
+            except Exception:
+                logger.exception('Rynek bieżącej stacji dla oceny ładunku')
         try:
-            self.window.after(0, self._cargo_done, reference, cargo, cands, names, error)
+            self.window.after(0, self._cargo_done, reference, cargo, cands, names, error, here)
         except Exception:
             pass
 
-    def _cargo_done(self, reference: str, cargo: list, cands: list, names: dict, error: str) -> None:
+    def _cargo_done(self, reference: str, cargo: list, cands: list, names: dict, error: str, here: dict) -> None:
         self._cargo_busy = False
+        if self._cargo_pending:
+            self._cargo_pending = False
+            self.window.after(0, self.refresh_cargo_sales)
         self._cargo_cands = cands
-        self._cargo_meta = (reference, cargo, names, error)
+        self._cargo_meta = (reference, cargo, names, error, here)
         self._render_cargo()
 
+    def _paid_prices(self) -> dict[str, int]:
+        """Ostatnia cena zakupu towaru w tej sesji (z journala) — do wykrycia sprzedaży ze stratą."""
+        with self._session_lock:
+            summary = self._session_summary
+        paid = {}
+        for t in (summary.trades if summary is not None else []):
+            if t.kind == 'buy':
+                paid[t.commodity.lower()] = t.price
+        return paid
+
     def _render_cargo(self) -> None:
+        """Każdy towar w ładowni: HOLD / SELL HERE / SELL THERE + SWOT (względem stacji, okolicy, ceny zakupu)."""
         if self._cargo_meta is None:
             return
-        reference, cargo, names, error = self._cargo_meta
-        trades = rank_trades(self._cargo_cands, self.nearby_mode_var.get())
-        self.nearby_cargo_table.set_rows([self._trade_row(t, names, False) for t in trades],
-                                         sort_values=[self._trade_sort(t) for t in trades], payloads=trades,
-                                         tags=[_age_tag(t.age_hours) for t in trades])
-        total = sum(t.total_profit for t in trades)
-        unsold = len(cargo) - len(trades)
-        right = f'razem {total:,} cr' + (f' · {unsold} bez kupca w zasięgu' if unsold else '')
-        self.nearby_cargo_header.set(f'Twój ładunek — gdzie sprzedać (wokół {reference})',
+        reference, cargo, names, error, here = self._cargo_meta
+        mode = self.nearby_mode_var.get()
+        trades = rank_trades(self._cargo_cands, mode)
+        verdicts = assess.assess_all(trades, assess.value_for_mode(mode))
+        best_of = {t.commodity.lower(): (t, v) for t, v in zip(trades, verdicts)}
+        paid = self._paid_prices()
+        rows, sorts, tags, payloads = [], [], [], []
+        total = 0
+        for c in cargo:
+            symbol = c.get('Name', '').lower()
+            count = int(c.get('Count') or 0)
+            best, best_v = best_of.get(symbol, (None, None))
+            item = here.get(symbol)
+            here_price = item.sell_price if item is not None and item.demand > 1 else 0
+            advice = assess.advise_cargo(count, best, best_v, here_price=here_price,
+                                         mean_price=item.mean_price if item is not None else 0,
+                                         paid_price=paid.get(symbol, 0))
+            name = names.get(symbol, c.get('Name_Localised') or c.get('Name', ''))
+            if advice.action == assess.SELL_HERE or best is None:
+                ctx = self.context()
+                price = here_price
+                rows.append((advice.badge, name, count, ctx['station'] if here_price else '—',
+                             ctx['system'] if here_price else '', f'{price:,}' if price else '—',
+                             f'{price * count:,}' if price else '—', '0:00' if price else '', '', '', '', '', ''))
+                payload = _CargoHere(symbol, name, ctx['system'], ctx['station'] if here_price else '', price)
+                total += price * count
+            else:
+                rows.append(self._trade_row(best, names, False, advice))
+                payload = best
+                total += best.total_profit
+            sorts.append({'verdict': {'sell_here': 3, 'sell_there': 2, 'hold': 0}[advice.action] + advice.degree,
+                          'units': count})
+            tags.append(tce.verdict_tag(advice.verdict, advice.degree))
+            payloads.append(payload)
+            self._assessments[id(payload)] = advice
+        self.nearby_cargo_table.set_rows(rows, sort_values=sorts, tags=tags, payloads=payloads)
+        holds = sum(1 for p in payloads if self._assessments[id(p)].action == assess.HOLD)
+        right = f'razem {total:,} cr' + (f' · {holds} × HOLD' if holds else '')
+        self.nearby_cargo_header.set(f'Twój ładunek — HOLD czy SELL? (wokół {reference})',
                                      f'błąd: {error}' if error else right)
 
     def show_docked_station(self, system_name: str, station_name: str) -> None:

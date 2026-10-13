@@ -12,6 +12,7 @@ import tkinter.font as tkfont
 from typing import Optional, Callable
 
 from . import tce_theme as tce
+from . import assess
 from .trade import TradeRoute, age_hours
 
 logger = logging.getLogger(__name__)
@@ -269,10 +270,12 @@ class TradeOverlay:
         current = route.hops_list[hop_num - 1] if route.hops_list and 1 <= hop_num <= len(route.hops_list) else None
         sell_age = age_hours(current.dst_updated_at) if current is not None else None
         if sell_age is not None:
-            meta.append("CENY " + (f"{sell_age:.0f}H" if sell_age < 48 else f"{sell_age / 24:.0f}D")
-                        + (" ⚠" if sell_age > 72 else ""))
-            if sell_age > 72:
-                meta_color = tce.RED  # stare ceny — na miejscu może być inaczej
+            meta.append("CENY " + (f"{sell_age:.0f}H" if sell_age < 48 else f"{sell_age / 24:.0f}D"))
+        if current is not None:
+            # Werdykt etapu: trasa ze Spansh jest zyskowo najlepsza — o OPTIMAL/RISKY decyduje pewność cen celu
+            verdict, degree = assess.assess_route_hop(sell_age)
+            meta.insert(0, f"{assess.ICONS[verdict]} {assess.LABELS[verdict]}")
+            meta_color = tce.verdict_color(verdict, degree, tce.ROW_BG)
         if getattr(route, '_scoopable', False):
             meta.append("⛽")
 

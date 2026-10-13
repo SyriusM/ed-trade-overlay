@@ -20,6 +20,27 @@ GREEN = "#4cff4c"
 RED = "#ff3b30"
 BLUE = "#5ab4ff"
 
+# Werdykty oceny okazji (edtrade/assess.py): kolor wg klasy, natężenie wg stopnia (4 poziomy)
+VERDICT_COLORS = {"optimal": GREEN, "safe": BLUE, "risky": RED, "hold": "#ffd23f"}
+VERDICT_LEVELS = 4
+
+
+def _mix(c1: str, c2: str, t: float) -> str:
+    a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{round(x + (y - x) * t):02x}" for x, y in zip(a, b))
+
+
+def verdict_color(verdict: str, degree: float, bg: str = ROW_BG) -> str:
+    """Słaby stopień = kolor przygaszony w stronę tła, mocny = pełny kolor."""
+    level = min(VERDICT_LEVELS - 1, int(max(0.0, min(1.0, degree)) * VERDICT_LEVELS))
+    return _mix(bg, VERDICT_COLORS[verdict], 0.45 + 0.55 * level / (VERDICT_LEVELS - 1))
+
+
+def verdict_tag(verdict: str, degree: float) -> str:
+    level = min(VERDICT_LEVELS - 1, int(max(0.0, min(1.0, degree)) * VERDICT_LEVELS))
+    return f"v_{verdict}_{level}"
+
 # Pierwsza dostępna — TCE używa wąskiego, "technicznego" kroju
 FONT_CANDIDATES = (
     "Eurostile", "Euro Caps", "Michroma", "Orbitron", "Rajdhani", "Saira Semi Condensed",
@@ -217,6 +238,10 @@ class DataTable(tk.Frame):
         self.tree.tag_configure("dim", foreground=ORANGE_DIM)
         self.tree.tag_configure("good", foreground=GREEN)
         self.tree.tag_configure("bad", foreground=RED)
+        for verdict in VERDICT_COLORS:
+            for level in range(VERDICT_LEVELS):
+                self.tree.tag_configure(f"v_{verdict}_{level}",
+                                        foreground=verdict_color(verdict, (level + 0.5) / VERDICT_LEVELS))
         self._sort_values: dict[str, dict] = {}
         self._payloads: dict = {}
 
