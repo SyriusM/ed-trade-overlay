@@ -1,0 +1,9 @@
+# Zadanie: IMPLEMENTACJA ONLY — wyszukiwarka materiałów (punkt 4)
+Bez researchu, bez przeglądarki. Wszystko jest w SPEC.md, sekcja "4. Wyszukiwarka materiałów inżynieryjnych — RESEARCH" (koniec pliku). Wzoruj się na `search_stations()` w edtrade/trade.py (funkcja modułowa, requests, nagłówki User-Agent "EdTradeOverlay/0.1", błąd sieci -> pusta lista + logger.error).
+1. Dodaj w edtrade/trade.py (poziom modułu, NIE w TradeEngine) dataclassy `MaterialTrader` (name, system_name, distance, material_trader, technology_broker, distance_to_arrival, large_pads, medium_pads) i `MaterialBody` (name, system_name, distance, distance_to_arrival, gravity, is_landable, share) — pola z domyślnymi wartościami, nie dodawaj pól spoza listy.
+2. Funkcje:
+   - `find_material_traders(reference_system: str, kind: str, max_ly: float = 50.0, size: int = 10) -> list[MaterialTrader]` — POST https://spansh.co.uk/api/stations/search (JSON z SPEC.md; kind = Raw/Encoded/Manufactured).
+   - `find_material_bodies(reference_system: str, material: str, max_ly: float = 50.0, min_share: float = 0.0, max_gravity: float = 0.5, size: int = 10) -> list[MaterialBody]` — POST https://spansh.co.uk/api/bodies/search z filtrami: `"is_landable":{"value":true}`, `"gravity":{"comparison":"<=>","value":[0,max_gravity]}`, `"materials":[{"name":material,"comparison":"<=>","value":[1,100]}]`, `"distance":{"min":0,"max":max_ly}`. `share` bierz z `materials[]` pozycji o nazwie == material. UWAGA: sortowanie po stronie Spansh NIE działa — pobierz `size` większy (np. 50), odfiltruj `share >= min_share`, posortuj malejąco po share i utnij do `size`.
+3. Nie ruszaj istniejących funkcji/klas. Nie edytuj SPEC.md.
+4. Test (realny, 30 s): py_compile, potem `find_material_traders("Sol","Manufactured",50,3)` -> >=1 wynik z niepustym name; `find_material_bodies("Sol","Antimony",50,0.5,0.5,3)` -> >=1 wynik, share malejące.
+5. Na końcu krótko: co zrobione + wyniki testu.

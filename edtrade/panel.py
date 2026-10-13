@@ -1,0 +1,363 @@
+"""TCE-style panel — osobne, zwykłe okno (Alt-Tab działa), z zakładkami.
+
+W odróżnieniu od overlay.py (cienki pasek, overrideredirect, bez fokusu),
+to jest zwykły tk.Toplevel — widoczny w Alt-Tab, przeciągalny, z dekoracją.
+"""
+
+import logging
+import threading
+import tkinter as tk
+from pathlib import Path
+from tkinter import ttk
+from typing import Optional
+from .config import load_user_config, save_user_config
+from .trade import get_system_info, search_stations, find_material_traders, find_mining_hotspots, find_mineral_buyers, TradeEngine
+
+logger = logging.getLogger(__name__)
+
+
+class TradePanel:
+    """Osobne okno z zakładkami (Trasa/System/Materiały/Mining/Journey/Ustawienia)."""
+
+    def __init__(self, master: tk.Tk, user_config: Optional[dict] = None, config_path: Optional[Path] = None):
+        self.master = master
+        self.config_path = config_path
+        self.user_config = user_config if user_config is not None else load_user_config(config_path)
+        self.trade_engine = TradeEngine()
+        self.window = tk.Toplevel(master)
+        self.window.title('ED Trade Panel')
+        self.window.geometry('700x450')
+        # X minimalizuje okno zamiast je niszczyć — panel wraca z paska zadań / Alt-Tab
+        self.window.protocol('WM_DELETE_WINDOW', self.window.iconify)
+
+        self.notebook = ttk.Notebook(self.window)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+        self.tab_system = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_system, text='System')
+
+        self.system_entry_var = tk.StringVar(value='Sol')
+        self.system_entry_frame = ttk.Frame(self.tab_system)
+        self.system_entry_frame.pack(fill=tk.X, padx=10, pady=(10, 4))
+        ttk.Label(self.system_entry_frame, text='System:').pack(side=tk.LEFT)
+        self.system_entry = ttk.Entry(self.system_entry_frame, textvariable=self.system_entry_var, width=30)
+        self.system_entry.pack(side=tk.LEFT, padx=(4, 4))
+        self.system_refresh_btn = ttk.Button(self.system_entry_frame, text='Odśwież', command=self.refresh_system_tab)
+        self.system_refresh_btn.pack(side=tk.LEFT)
+
+        self.system_info_text = tk.Text(self.tab_system, height=20, width=80, wrap=tk.WORD)
+        self.system_info_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
+        self.system_info_text.insert('1.0', '(wpisz system i kliknij Odśwież)')
+        self.system_info_text.config(state=tk.DISABLED)
+
+        self.tab_materials = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_materials, text='Materiały')
+
+        self.materials_kind_var = tk.StringVar(value='Manufactured')
+        self.materials_system_var = tk.StringVar(value='Sol')
+        self.materials_entry_frame = ttk.Frame(self.tab_materials)
+        self.materials_entry_frame.pack(fill=tk.X, padx=10, pady=(10, 4))
+        ttk.Label(self.materials_entry_frame, text='System:').pack(side=tk.LEFT)
+        ttk.Entry(self.materials_entry_frame, textvariable=self.materials_system_var, width=20).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(self.materials_entry_frame, text='Rodzaj:').pack(side=tk.LEFT)
+        ttk.Combobox(self.materials_entry_frame, textvariable=self.materials_kind_var, values=['Raw', 'Encoded', 'Manufactured'], width=15, state='readonly').pack(side=tk.LEFT, padx=(4, 10))
+        self.materials_btn = ttk.Button(self.materials_entry_frame, text='Odśwież', command=self.refresh_materials_tab)
+        self.materials_btn.pack(side=tk.LEFT)
+
+        self.materials_text = tk.Text(self.tab_materials, height=20, width=80, wrap=tk.WORD)
+        self.materials_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
+        self.materials_text.insert('1.0', '(wybierz system i rodzaj, kliknij Odśwież)')
+        self.materials_text.config(state=tk.DISABLED)
+
+        self.tab_mining = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_mining, text='Mining')
+
+        self.mining_tab_mineral_var = tk.StringVar(value='Platinum')
+        self.mining_system_var = tk.StringVar(value='Sol')
+        self.mining_entry_frame = ttk.Frame(self.tab_mining)
+        self.mining_entry_frame.pack(fill=tk.X, padx=10, pady=(10, 4))
+        ttk.Label(self.mining_entry_frame, text='System:').pack(side=tk.LEFT)
+        ttk.Entry(self.mining_entry_frame, textvariable=self.mining_system_var, width=20).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(self.mining_entry_frame, text='Minerał:').pack(side=tk.LEFT)
+        ttk.Entry(self.mining_entry_frame, textvariable=self.mining_tab_mineral_var, width=20).pack(side=tk.LEFT, padx=(4, 10))
+        self.mining_btn = ttk.Button(self.mining_entry_frame, text='Odśwież', command=self.refresh_mining_tab)
+        self.mining_btn.pack(side=tk.LEFT)
+
+        self.mining_text = tk.Text(self.tab_mining, height=20, width=80, wrap=tk.WORD)
+        self.mining_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
+        self.mining_text.insert('1.0', '(wybierz system i minerał, kliknij Odśwież)')
+        self.mining_text.config(state=tk.DISABLED)
+
+        self.tab_journey = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_journey, text='Journey')
+
+        self.journey_start_var = tk.StringVar(value='Sol')
+        self.journey_end_var = tk.StringVar(value='Colonia')
+        self.journey_range_var = tk.StringVar(value='30.0')
+        self.journey_entry_frame = ttk.Frame(self.tab_journey)
+        self.journey_entry_frame.pack(fill=tk.X, padx=10, pady=(10, 4))
+        ttk.Label(self.journey_entry_frame, text='Start:').pack(side=tk.LEFT)
+        ttk.Entry(self.journey_entry_frame, textvariable=self.journey_start_var, width=15).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(self.journey_entry_frame, text='Cel:').pack(side=tk.LEFT)
+        ttk.Entry(self.journey_entry_frame, textvariable=self.journey_end_var, width=15).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(self.journey_entry_frame, text='Zasięg (ly):').pack(side=tk.LEFT)
+        ttk.Entry(self.journey_entry_frame, textvariable=self.journey_range_var, width=8).pack(side=tk.LEFT, padx=(4, 10))
+        self.journey_calc_btn = ttk.Button(self.journey_entry_frame, text='Oblicz', command=self.refresh_journey_tab)
+        self.journey_calc_btn.pack(side=tk.LEFT)
+
+        self.journey_text = tk.Text(self.tab_journey, height=20, width=80, wrap=tk.WORD)
+        self.journey_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
+        self.journey_text.insert('1.0', '(wpisz start/cel/zasięg, kliknij Oblicz — może potrwać do 2 min)')
+        self.journey_text.config(state=tk.DISABLED)
+
+        # --- Zakładka Ustawienia ---
+        self.tab_settings = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_settings, text='Ustawienia')
+
+        self.settings_frame = ttk.Frame(self.tab_settings)
+        self.settings_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.settings_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(self.settings_frame, text='Cel journey (system):').grid(row=0, column=0, sticky='w', padx=(0, 8), pady=4)
+        self.journey_target_var = tk.StringVar(value=str(self.user_config.get('journey_target_system', '')))
+        ttk.Entry(self.settings_frame, textvariable=self.journey_target_var).grid(row=0, column=1, sticky='ew', pady=4)
+
+        ttk.Label(self.settings_frame, text='Zasięg statku (ly):').grid(row=1, column=0, sticky='w', padx=(0, 8), pady=4)
+        self.ship_range_var = tk.StringVar(value=str(self.user_config.get('ship_range_ly', 30.0)))
+        ttk.Entry(self.settings_frame, textvariable=self.ship_range_var).grid(row=1, column=1, sticky='ew', pady=4)
+
+        ttk.Label(self.settings_frame, text='Materiały (kind):').grid(row=2, column=0, sticky='w', padx=(0, 8), pady=4)
+        self.material_kind_var = tk.StringVar(value=str(self.user_config.get('material_kind', '')))
+        ttk.Combobox(self.settings_frame, textvariable=self.material_kind_var,
+                     values=['', 'Raw', 'Encoded', 'Manufactured'], state='readonly').grid(row=2, column=1, sticky='ew', pady=4)
+
+        ttk.Label(self.settings_frame, text='Mining (minerał):').grid(row=3, column=0, sticky='w', padx=(0, 8), pady=4)
+        self.mining_mineral_var = tk.StringVar(value=str(self.user_config.get('mining_mineral', '')))
+        ttk.Entry(self.settings_frame, textvariable=self.mining_mineral_var).grid(row=3, column=1, sticky='ew', pady=4)
+
+        ttk.Label(self.settings_frame, text='Klasa okna gry:').grid(row=4, column=0, sticky='w', padx=(0, 8), pady=4)
+        self.game_window_class_var = tk.StringVar(value=str(self.user_config.get('game_window_class', '')))
+        ttk.Entry(self.settings_frame, textvariable=self.game_window_class_var).grid(row=4, column=1, sticky='ew', pady=4)
+
+        self.bar_only_var = tk.BooleanVar(value=bool(self.user_config.get('bar_only_when_game_focused', False)))
+        ttk.Checkbutton(self.settings_frame, text='Pasek tylko gdy gra ma fokus', variable=self.bar_only_var).grid(row=5, column=1, sticky='w', pady=4)
+
+        self.save_settings_btn = ttk.Button(self.settings_frame, text='Zapisz', command=self.save_settings)
+        self.save_settings_btn.grid(row=6, column=1, sticky='w', pady=(10, 4))
+
+        self.settings_status_var = tk.StringVar(value='')
+        ttk.Label(self.settings_frame, textvariable=self.settings_status_var).grid(row=7, column=1, sticky='w', pady=4)
+
+    def _set_system_text(self, text: str) -> None:
+        self.system_info_text.config(state=tk.NORMAL)
+        self.system_info_text.delete('1.0', tk.END)
+        self.system_info_text.insert('1.0', text)
+        self.system_info_text.config(state=tk.DISABLED)
+
+    def refresh_system_tab(self) -> None:
+        """Waliduj w watku Tk i pobierz stacje systemu w watku roboczym (UI nie zamarza)."""
+        system_name = self.system_entry_var.get().strip()
+        if not system_name:
+            return
+        self.system_refresh_btn.config(state=tk.DISABLED)
+        self._set_system_text(f'System: {system_name}\n\nSzukam...')
+        threading.Thread(target=self._system_worker, args=(system_name,), daemon=True).start()
+
+    def _system_worker(self, system_name: str) -> None:
+        """Watek roboczy: NIE dotyka widgetow Tk — liczy i oddaje tekst przez after(0)."""
+        lines = [f'System: {system_name}', '']
+        try:
+            stations = search_stations(system_name)
+            if stations:
+                lines.append(f'Stacje ({len(stations)}):')
+                for s in stations[:20]:
+                    lines.append(f'  - {s.name} ({s.pad_size or "?"}) {s.distance_to_arrival:.0f} ls')
+            else:
+                lines.append('Brak danych o stacjach.')
+        except Exception as e:
+            lines.append(f'Błąd wyszukiwania stacji: {e}')
+        try:
+            self.window.after(0, self._system_done, '\n'.join(lines))
+        except Exception:
+            pass
+
+    def _system_done(self, text: str) -> None:
+        """Wywolywane w watku Tk: pokaz wynik i odblokuj przycisk."""
+        self._set_system_text(text)
+        self.system_refresh_btn.config(state=tk.NORMAL)
+
+    def _set_materials_text(self, text: str) -> None:
+        self.materials_text.config(state=tk.NORMAL)
+        self.materials_text.delete('1.0', tk.END)
+        self.materials_text.insert('1.0', text)
+        self.materials_text.config(state=tk.DISABLED)
+
+    def refresh_materials_tab(self) -> None:
+        """Waliduj w watku Tk i pobierz handlarzy materialow w watku roboczym (UI nie zamarza)."""
+        system_name = self.materials_system_var.get().strip()
+        kind = self.materials_kind_var.get().strip()
+        if not system_name or not kind:
+            return
+        self.materials_btn.config(state=tk.DISABLED)
+        self._set_materials_text(f'System: {system_name} | Rodzaj: {kind}\n\nSzukam...')
+        threading.Thread(target=self._materials_worker, args=(system_name, kind), daemon=True).start()
+
+    def _materials_worker(self, system_name: str, kind: str) -> None:
+        """Watek roboczy: NIE dotyka widgetow Tk — liczy i oddaje tekst przez after(0)."""
+        lines = [f'System: {system_name} | Rodzaj: {kind}', '']
+        try:
+            traders = find_material_traders(system_name, kind, max_ly=50, size=10)
+            if traders:
+                lines.append(f'Handlarze ({len(traders)}):')
+                for t in traders:
+                    lines.append(f'  - {t.name} ({t.system_name}) {t.distance:.1f} ly')
+            else:
+                lines.append('Brak handlarzy w zasięgu.')
+        except Exception as e:
+            lines.append(f'Błąd wyszukiwania: {e}')
+        try:
+            self.window.after(0, self._materials_done, '\n'.join(lines))
+        except Exception:
+            pass
+
+    def _materials_done(self, text: str) -> None:
+        """Wywolywane w watku Tk: pokaz wynik i odblokuj przycisk."""
+        self._set_materials_text(text)
+        self.materials_btn.config(state=tk.NORMAL)
+
+    def _set_mining_text(self, text: str) -> None:
+        self.mining_text.config(state=tk.NORMAL)
+        self.mining_text.delete('1.0', tk.END)
+        self.mining_text.insert('1.0', text)
+        self.mining_text.config(state=tk.DISABLED)
+
+    def refresh_mining_tab(self) -> None:
+        """Waliduj w watku Tk i pobierz hotspoty i kupcow w watku roboczym (UI nie zamarza)."""
+        system_name = self.mining_system_var.get().strip()
+        mineral = self.mining_tab_mineral_var.get().strip()
+        if not system_name or not mineral:
+            return
+        self.mining_btn.config(state=tk.DISABLED)
+        self._set_mining_text(f'System: {system_name} | Minerał: {mineral}\n\nSzukam...')
+        threading.Thread(target=self._mining_worker, args=(system_name, mineral), daemon=True).start()
+
+    def _mining_worker(self, system_name: str, mineral: str) -> None:
+        """Watek roboczy: NIE dotyka widgetow Tk — liczy i oddaje tekst przez after(0)."""
+        lines = [f'System: {system_name} | Minerał: {mineral}', '']
+        try:
+            hotspots = find_mining_hotspots(system_name, mineral, max_ly=50, size=5)
+            if hotspots:
+                lines.append(f'Hotspoty ({len(hotspots)}):')
+                for h in hotspots:
+                    lines.append(f'  - {h.body_name} ({h.ring_name}, {h.ring_type}) {h.count}x, {h.distance:.1f} ly')
+            else:
+                lines.append('Brak hotspotów w zasięgu.')
+        except Exception as e:
+            lines.append(f'Błąd wyszukiwania hotspotów: {e}')
+
+        lines.append('')
+        try:
+            buyers = find_mineral_buyers(mineral, system_name, max_ly=60, size=5)
+            if buyers:
+                lines.append(f'Kupcy ({len(buyers)}):')
+                for b in buyers:
+                    lines.append(f'  - {b.station_name} ({b.system_name}) {b.sell_price:,}cr, {b.distance:.1f} ly')
+            else:
+                lines.append('Brak kupców w zasięgu.')
+        except Exception as e:
+            lines.append(f'Błąd wyszukiwania kupców: {e}')
+        try:
+            self.window.after(0, self._mining_done, '\n'.join(lines))
+        except Exception:
+            pass
+
+    def _mining_done(self, text: str) -> None:
+        """Wywolywane w watku Tk: pokaz wynik i odblokuj przycisk."""
+        self._set_mining_text(text)
+        self.mining_btn.config(state=tk.NORMAL)
+
+    def _set_journey_text(self, text: str) -> None:
+        self.journey_text.config(state=tk.NORMAL)
+        self.journey_text.delete('1.0', tk.END)
+        self.journey_text.insert('1.0', text)
+        self.journey_text.config(state=tk.DISABLED)
+
+    def refresh_journey_tab(self) -> None:
+        """Waliduj dane w watku Tk i uruchom obliczenie trasy Spansh w watku roboczym (UI nie zamarza)."""
+        start = self.journey_start_var.get().strip()
+        end = self.journey_end_var.get().strip()
+        try:
+            ship_range = float(self.journey_range_var.get().strip())
+        except ValueError:
+            self._set_journey_text('Błąd: zasięg musi być liczbą.')
+            return
+        if not start or not end:
+            return
+        self.journey_calc_btn.config(state=tk.DISABLED)
+        self._set_journey_text(f'{start} -> {end} (zasięg {ship_range} ly)\n\nLiczę trasę... (do 2 min)')
+        threading.Thread(target=self._journey_worker, args=(start, end, ship_range), daemon=True).start()
+
+    def _journey_worker(self, start: str, end: str, ship_range: float) -> None:
+        """Watek roboczy: NIE dotyka widgetow Tk — liczy i oddaje tekst przez after(0)."""
+        lines = [f'{start} -> {end} (zasięg {ship_range} ly)', '']
+        try:
+            plan = self.trade_engine.plan_journey(start, end, ship_range)
+            if plan.error:
+                lines.append(f'Błąd: {plan.error}')
+            else:
+                lines.append(f'Skoki: {plan.total_jumps} | Dystans: {plan.total_distance:.1f} ly')
+                lines.append('')
+                for hop in plan.hops[:30]:
+                    neutron = ' [neutron]' if getattr(hop, 'neutron_star', False) else ''
+                    lines.append(f'  - {hop.system} ({hop.jumps} skoki, {hop.distance_jumped:.1f} ly){neutron}')
+        except Exception as e:
+            lines.append(f'Błąd kalkulacji: {e}')
+        try:
+            self.window.after(0, self._journey_done, '\n'.join(lines))
+        except Exception:
+            pass
+
+    def _journey_done(self, text: str) -> None:
+        """Wywolywane w watku Tk: pokaz wynik i odblokuj przycisk."""
+        self._set_journey_text(text)
+        self.journey_calc_btn.config(state=tk.NORMAL)
+
+    def save_settings(self) -> None:
+        """Zapisz ustawienia do self.user_config (in-place) i do pliku."""
+        journey_target = self.journey_target_var.get().strip()
+        ship_range_str = self.ship_range_var.get().strip()
+        material_kind = self.material_kind_var.get().strip()
+        mining_mineral = self.mining_mineral_var.get().strip()
+
+        # Walidacja zasięgu
+        try:
+            ship_range = float(ship_range_str)
+        except ValueError:
+            self.settings_status_var.set('Błąd: zasięg musi być liczbą.')
+            return
+
+        # Aktualizuj config in-place
+        self.user_config.update({
+            'journey_target_system': journey_target,
+            'ship_range_ly': ship_range,
+            'material_kind': material_kind,
+            'mining_mineral': mining_mineral,
+            'game_window_class': self.game_window_class_var.get().strip(),
+            'bar_only_when_game_focused': bool(self.bar_only_var.get()),
+        })
+
+        # Zapisz do pliku
+        try:
+            save_user_config(self.user_config, self.config_path)
+            self.settings_status_var.set('Zapisano.')
+        except Exception as e:
+            self.settings_status_var.set(f'Błąd zapisu: {e}')
+
+    def show(self) -> None:
+        """Pokaż okno panelu (deiconify + podnieś na wierzch)."""
+        self.window.deiconify()
+        self.window.lift()
+
+    def hide(self) -> None:
+        """Ukryj okno panelu."""
+        self.window.withdraw()
