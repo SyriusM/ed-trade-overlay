@@ -31,6 +31,25 @@ def parse_commodity_names(*csv_texts: str) -> dict[str, str]:
     return names
 
 
+def parse_commodity_ids(*csv_texts: str) -> dict[int, str]:
+    """FDevIDs → {id towaru z Market.json: symbol lowercase} (symbole = nazwy towarów w Ardent)."""
+    ids = {}
+    for text in csv_texts:
+        for row in csv.DictReader(io.StringIO(text or "")):
+            try:
+                ids[int(row.get("id") or 0)] = (row.get("symbol") or "").strip().lower()
+            except ValueError:
+                continue
+    ids.pop(0, None)
+    return ids
+
+
+def load_commodity_ids(cache_dir: Optional[Path] = None) -> dict[int, str]:
+    texts = [fetch_cached(url, fn, cache_dir) for url, fn in
+             ((FDEVIDS_COMMODITY_URL, "commodity.csv"), (FDEVIDS_RARE_URL, "rare_commodity.csv"))]
+    return parse_commodity_ids(*(t for t in texts if t))
+
+
 def load_commodity_names(cache_dir: Optional[Path] = None) -> dict[str, str]:
     texts = [fetch_cached(url, fn, cache_dir) for url, fn in
              ((FDEVIDS_COMMODITY_URL, "commodity.csv"), (FDEVIDS_RARE_URL, "rare_commodity.csv"))]

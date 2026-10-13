@@ -112,3 +112,43 @@ class TestCargoEvent(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFreshness(unittest.TestCase):
+    def test_age_and_factor(self):
+        import time as _t
+        from datetime import datetime, timedelta, timezone
+        self.assertAlmostEqual(trade.age_hours(_t.time() - 7200), 2.0, places=1)          # epoch (Spansh)
+        iso = (datetime.now(timezone.utc) - timedelta(hours=30)).isoformat().replace("+00:00", "Z")
+        self.assertAlmostEqual(trade.age_hours(iso), 30.0, places=1)                       # ISO (Ardent)
+        self.assertIsNone(trade.age_hours(""))
+        self.assertEqual([trade.freshness_factor(h) for h in (1, 10, 50, 100, None)], [1.0, 0.9, 0.75, 0.5, 0.7])
+
+    def test_fresh_beats_slightly_better_stale(self):
+        from datetime import datetime, timedelta, timezone
+        iso = lambda h: (datetime.now(timezone.utc) - timedelta(hours=h)).isoformat()
+        buyers = [MineralBuyer("Stara", "A", 9999, 2800, "large", 10.0, 10, iso(100), "Coriolis"),
+                  MineralBuyer("Swieza", "B", 9999, 2600, "large", 10.0, 10, iso(2), "Coriolis")]
+        with mock.patch.object(trade, "find_mineral_buyers", return_value=buyers):
+            for mode in ("total", "per_hour"):
+                best = trade.best_buyer("gold", "X", 100, 0, MarketFilter(), mode=mode)
+                self.assertEqual(best.sell_station, "Swieza", mode)   # 280k×0.5 < 260k×1.0
+
+
+class TestLiveMarket(unittest.TestCase):
+    """Market.json z gry → rynek bieżącej stacji (pola id/BuyPrice/SellPrice/Stock/Demand jak w market_cache)."""
+
+    DATA = {"timestamp": "2026-10-13T14:00:05Z", "event": "Market", "MarketID": 128016640,
+            "StationName": "Columbus", "StarSystem": "Sol",
+            "Items": [{"id": 128049154, "BuyPrice": 45000, "SellPrice": 44000, "MeanPrice": 47000, "Stock": 900, "Demand": 1},
+                      {"id": 128049152, "BuyPrice": 0, "SellPrice": 30000, "MeanPrice": 28000, "Stock": 0, "Demand": 500},
+                      {"id": 999, "BuyPrice": 10, "SellPrice": 5, "MeanPrice": 9, "Stock": 5, "Demand": 0}]}
+
+    def test_market_from_json(self):
+        from edtrade.checklist import parse_commodity_ids
+        ids = parse_commodity_ids("id,symbol,category,name\n128049154,Gold,Metals,Gold\n128049152,Platinum,Metals,Platinum\n")
+        m = trade.market_from_market_json(self.DATA, ids)
+        self.assertEqual((m.system_name, m.station_name, m.updated_at), ("Sol", "Columbus", "2026-10-13T14:00:05Z"))
+        self.assertEqual([i.name for i in m.exports], ["gold"])        # nieznane id pominięte
+        self.assertEqual([i.name for i in m.imports], ["platinum"])    # popyt 1 przy eksporcie (gold) to nie popyt
+        self.assertEqual(m.exports[0].buy_price, 45000)

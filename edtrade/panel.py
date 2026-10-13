@@ -4,6 +4,7 @@ W odróżnieniu od overlay.py (cienki pasek, overrideredirect, bez fokusu),
 to jest zwykły tk.Toplevel — widoczny w Alt-Tab, przeciągalny, z dekoracją.
 """
 
+import copy
 import logging
 import re
 import threading
@@ -17,6 +18,7 @@ from . import tce_theme as tce
 from .checklist import load_commodity_names
 from .filters import filter_from_config
 from datetime import datetime, timezone
+from .trade import age_hours as price_age_hours
 from .trade import (get_system_info, search_stations, find_material_traders, find_mining_hotspots, find_mineral_buyers,
                     find_commodity_sellers, get_station_market, StationMarket, JourneyPlan, TradeEngine,
                     nearby_candidates_from_market, cargo_candidates, rank_trades, RANK_MODES)
@@ -24,7 +26,8 @@ from .trade import (get_system_info, search_stations, find_material_traders, fin
 COMMODITY_MODES = ('Kup', 'Sprzedaj')
 PAGE_HINTS = {
     'Trasa': 'Najlepsza trasa z bieżącej stacji — liczy się sama po dokowaniu, kroki odhaczają się z gry.',
-    'Okolica': 'Co kupić tutaj i gdzie to sprzedać, plus Twój ładunek. Dwuklik: kopiuj system · prawy klik: więcej.',
+    'Okolica': 'Co kupić tutaj i gdzie sprzedać + Twój ładunek. Ranking waży świeżość cen (szare >1 d, czerwone >3 d). '
+               'Dwuklik: kopiuj system · prawy klik: więcej.',
     'Porównaj': 'Bieżąca stacja vs cel (jak Trade Overview w TCE). Otwórz z OKOLICY: prawy klik → Porównaj.',
     'Market': 'Pełny rynek jednej stacji. Wypełnia się sam po dokowaniu.',
     'Towary': 'Gdzie najtaniej kupić / najdrożej sprzedać dowolny towar. Dwuklik: kopiuj system.',
@@ -68,6 +71,21 @@ MATERIAL_HINTS = {
 }
 
 
+def _age_tag(hours) -> str:
+    """Kolor wiersza wg wieku cen: przygaszony >1 dzień, czerwony >3 dni (cena może już nie obowiązywać)."""
+    if hours is None or hours > 72:
+        return 'bad'
+    return 'dim' if hours > 24 else ''
+
+
+def _age_text(hours) -> str:
+    if hours is None:
+        return '?'
+    if hours < 1:
+        return '<1h'
+    return f'{hours:.0f}h' if hours < 48 else f'{hours / 24:.0f}d'
+
+
 def _hops_word(n: int) -> str:
     if n == 1:
         return 'hop'
@@ -100,7 +118,7 @@ class TradePanel:
         self.title_bar.pack(fill=tk.X)
         self._context_lock = threading.Lock()
         self._context: dict = {'system': '', 'station': '', 'ship': '', 'capacity': 0, 'jump_range': 0.0,
-                               'ship_large_pad': False, 'cargo': []}
+                               'ship_large_pad': False, 'cargo': [], 'live_market': None}
         self.context_label = tk.Label(self.window, text='', bg=tce.ROW_BG, fg=tce.ORANGE, font=self.fonts.body_bold,
                                       anchor='w', padx=10, pady=3)
         self.context_label.pack(fill=tk.X, padx=8, pady=(6, 0))
@@ -444,6 +462,7 @@ class TradePanel:
                                    anchor='w', padx=10)
         self._hint_text = ''
         self._toast_job = None
+        saved_page = str(self.user_config.get('panel_page', ''))  # odczyt PRZED nawigacją — ona nadpisuje panel_page
         self.nav = tce.GroupedNavBar(self.window, self.notebook, self.fonts, [
             ('Handel', [self.tab_route, self.tab_nearby, self.tab_overview, self.tab_market, self.tab_commodity]),
             ('Nawigacja', [self.tab_journey, self.tab_system]),
@@ -453,7 +472,7 @@ class TradePanel:
         self.nav.pack(fill=tk.X, padx=8, pady=(6, 0), before=self.notebook)
         self.hint_label.pack(fill=tk.X, padx=8, pady=(2, 0), before=self.notebook)
         pages = {self.notebook.tab(t, 'text'): t for t in self.notebook.tabs()}
-        start_page = pages.get(str(self.user_config.get('panel_page', '')))
+        start_page = pages.get(saved_page)
         if start_page:
             self.nav.select_frame(start_page)
         self._bind_all_row_actions()
@@ -485,6 +504,23 @@ class TradePanel:
         self._render_context()
         if 'cargo' in keys and hasattr(self, 'nearby_cargo_table'):
             self.refresh_cargo_sales()
+        if 'live_market' in keys:
+            # Gra zapisała Market.json — przelicz to, co dotyczy tej stacji, na dokładnych cenach
+            if self._live_market_for(self.market_system_var.get(), self.market_station_var.get()) is not None:
+                self.refresh_market_tab()
+            if self._live_market_for(self.nearby_system_var.get(), self.nearby_station_var.get()) is not None:
+                self.refresh_nearby_tab()
+
+    def _live_market_for(self, system: str, station: str):
+        live = self.context()['live_market']
+        if live is not None and (live.system_name.lower(), live.station_name.lower()) == (
+                system.strip().lower(), station.strip().lower()):
+            return live
+        return None
+
+    def _market_of(self, system: str, station: str):
+        """Rynek stacji: na zywo z gry (Market.json), jesli to stacja, na ktorej jestes; inaczej Ardent."""
+        return self._live_market_for(system, station) or get_station_market(system, station)
 
     def _market_filter(self):
         return filter_from_config(self.user_config, self.context()['ship_large_pad'])
@@ -840,6 +876,12 @@ class TradePanel:
         if hop.distance:
             tk.Label(side, text=f'{hop.distance:.2f} LY', bg=bg, fg=tce.TEXT_WHITE if not done else fg,
                      font=f.section, anchor='e').pack(anchor='e')
+        if hop.src_updated_at or hop.dst_updated_at:
+            src_age, dst_age = price_age_hours(hop.src_updated_at), price_age_hours(hop.dst_updated_at)
+            worst = max(h for h in (src_age, dst_age, 0) if h is not None)
+            color = fg if done else (tce.RED if worst > 72 else tce.ORANGE_DIM if worst > 24 else tce.GREEN)
+            tk.Label(side, text=f'CENY: {_age_text(src_age)} / {_age_text(dst_age)}'.upper(), bg=bg, fg=color,
+                     font=f.body_bold, anchor='e').pack(anchor='e')
         tk.Label(side, text=f'+{profit:,} CR', bg=bg, fg=tce.GREEN if not done else fg,
                  font=f.big, anchor='e').pack(anchor='e')
 
@@ -918,8 +960,8 @@ class TradePanel:
                          capacity: int) -> None:
         result = {'error': ''}
         try:
-            result['from'] = get_station_market(from_system, from_station)
-            result['to'] = get_station_market(to_system, to_station)
+            result['from'] = self._market_of(from_system, from_station)
+            result['to'] = self._market_of(to_system, to_station)
             result['from_info'] = next((x for x in search_stations(from_system) if x.name.lower() == from_station.lower()), None)
             result['to_info'] = next((x for x in search_stations(to_system) if x.name.lower() == to_station.lower()), None)
             result['names'] = load_commodity_names()
@@ -1029,7 +1071,7 @@ class TradePanel:
                        jump_range: float) -> None:
         cands, error, names = [], '', {}
         try:
-            market = get_station_market(system_name, station_name)
+            market = self._market_of(system_name, station_name)
             if market.error:
                 error = market.error
             else:
@@ -1057,12 +1099,15 @@ class TradePanel:
             system_name, station_name, capacity, names, error, filter_text = self._nearby_meta
             trades = rank_trades(self._nearby_cands, mode)
             self.nearby_table.set_rows([self._trade_row(t, names, True) for t in trades],
-                                       sort_values=[self._trade_sort(t) for t in trades], payloads=trades)
+                                       sort_values=[self._trade_sort(t) for t in trades], payloads=trades,
+                                       tags=[_age_tag(t.age_hours) for t in trades])
             hold = f'ładownia {capacity} t' if capacity else 'ładownia 304 t (domyślnie — czekam na Loadout)'
             if error:
                 self.nearby_header.set(f'{station_name} ({system_name}) — błąd: {error}', '')
             elif trades:
-                self.nearby_header.set(f'Kup w {station_name} → sprzedaj w okolicy', f'{len(trades)} towarów')
+                live = self._live_market_for(system_name, station_name) is not None
+                self.nearby_header.set(f'Kup w {station_name} → sprzedaj w okolicy',
+                                       f'{len(trades)} towarów' + (' · ceny zakupu na żywo z gry' if live else ''))
             else:
                 self.nearby_header.set(f'{station_name}: brak zyskownych okazji w zasięgu', f'{hold} · {filter_text}')
         self._render_cargo()
@@ -1112,7 +1157,8 @@ class TradePanel:
         reference, cargo, names, error = self._cargo_meta
         trades = rank_trades(self._cargo_cands, self.nearby_mode_var.get())
         self.nearby_cargo_table.set_rows([self._trade_row(t, names, False) for t in trades],
-                                         sort_values=[self._trade_sort(t) for t in trades], payloads=trades)
+                                         sort_values=[self._trade_sort(t) for t in trades], payloads=trades,
+                                         tags=[_age_tag(t.age_hours) for t in trades])
         total = sum(t.total_profit for t in trades)
         unsold = len(cargo) - len(trades)
         right = f'razem {total:,} cr' + (f' · {unsold} bez kupca w zasięgu' if unsold else '')
@@ -1223,7 +1269,7 @@ class TradePanel:
     def _market_worker(self, system_name: str, station_name: str) -> None:
         """Watek roboczy: NIE dotyka widgetow Tk — pobiera rynek i oddaje go przez after(0)."""
         try:
-            market = get_station_market(system_name, station_name)
+            market = copy.deepcopy(self._market_of(system_name, station_name))
             names = load_commodity_names()
             for item in market.exports + market.imports:
                 item.name = names.get(item.name.lower(), item.name)
@@ -1249,7 +1295,8 @@ class TradePanel:
         if market.error:
             self.market_header.set(f'{title} — błąd: {market.error}', '')
         else:
-            self.market_header.set(title, f'dane {_data_age(market.updated_at)}')
+            live = self._live_market_for(market.system_name, market.station_name) is not None
+            self.market_header.set(title, 'ceny na żywo z gry' if live else f'dane {_data_age(market.updated_at)}')
         self.market_exports_header.set(right_text=str(len(exports)))
         self.market_imports_header.set(right_text=str(len(imports)))
         self.market_btn.config(state=tk.NORMAL)

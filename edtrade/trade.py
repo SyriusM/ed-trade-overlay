@@ -421,6 +421,28 @@ class StationMarket:
     error: str = ""
 
 
+def market_from_market_json(data: dict, symbol_by_id: dict[int, str]) -> StationMarket:
+    """Market.json zapisany przez grę po otwarciu rynku — dokładne ceny TEJ stacji, teraz (lepsze niż API)."""
+    from datetime import datetime, timezone
+    market = StationMarket(system_name=data.get("StarSystem", ""), station_name=data.get("StationName", ""),
+                           updated_at=data.get("timestamp") or datetime.now(timezone.utc).isoformat())
+    for raw in data.get("Items") or []:
+        name = symbol_by_id.get(int(raw.get("id") or 0))
+        if not name:
+            continue
+        item = MarketItem(name=name, buy_price=raw.get("BuyPrice") or 0, sell_price=raw.get("SellPrice") or 0,
+                          stock=raw.get("Stock") or 0, demand=raw.get("Demand") or 0,
+                          mean_price=raw.get("MeanPrice") or 0, updated_at=market.updated_at)
+        if item.stock > 0 and item.buy_price > 0:
+            market.exports.append(item)
+        # Eksportowane towary mają w danych popyt 1 (placeholder) — to nie jest realny popyt
+        if item.demand > 1 and item.sell_price > 0:
+            market.imports.append(item)
+    market.exports.sort(key=lambda i: i.buy_price - i.mean_price)
+    market.imports.sort(key=lambda i: i.sell_price, reverse=True)
+    return market
+
+
 def get_station_market(system_name: str, station_name: str) -> StationMarket:
     """Rynek stacji z Ardent /v2/system/name/<system>/commodities, przefiltrowany po nazwie stacji.
 
@@ -464,7 +486,8 @@ def get_station_market(system_name: str, station_name: str) -> StationMarket:
         )
         if item.stock > 0 and item.buy_price > 0:
             market.exports.append(item)
-        if item.demand > 0 and item.sell_price > 0:
+        # Eksportowane towary mają w danych popyt 1 (placeholder) — to nie jest realny popyt
+        if item.demand > 1 and item.sell_price > 0:
             market.imports.append(item)
 
     market.exports.sort(key=lambda i: i.buy_price - i.mean_price)
@@ -472,6 +495,35 @@ def get_station_market(system_name: str, station_name: str) -> StationMarket:
     logger.info("get_station_market: %s/%s — %d exports, %d imports",
                 system_name, market.station_name, len(market.exports), len(market.imports))
     return market
+
+
+def age_hours(updated_at) -> Optional[float]:
+    """Wiek cen w godzinach: epoch (Spansh) albo ISO 8601 (Ardent); None gdy brak/nieczytelne."""
+    from datetime import datetime, timezone
+    if not updated_at:
+        return None
+    if isinstance(updated_at, (int, float)):
+        return max(0.0, (time.time() - float(updated_at)) / 3600)
+    try:
+        ts = datetime.fromisoformat(str(updated_at).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - ts).total_seconds() / 3600)
+
+
+def freshness_factor(hours: Optional[float]) -> float:
+    """Pewność, że cena jeszcze obowiązuje (przybliżenie): ≤6 h 100%, ≤24 h 90%, ≤3 d 75%, starsze 50%."""
+    if hours is None:
+        return 0.7
+    if hours <= 6:
+        return 1.0
+    if hours <= 24:
+        return 0.9
+    if hours <= 72:
+        return 0.75
+    return 0.5
 
 
 @dataclass
@@ -504,6 +556,23 @@ class NearbyTrade:
     def profit_per_hour(self) -> float:
         return self.total_profit * 3600 / self.travel_s if self.travel_s else 0.0
 
+    @property
+    def age_hours(self) -> Optional[float]:
+        return age_hours(self.updated_at)
+
+    @property
+    def confidence(self) -> float:
+        return freshness_factor(self.age_hours)
+
+    @property
+    def expected_total(self) -> float:
+        """Zysk ważony pewnością ceny — stare dane mogą już nie obowiązywać na miejscu."""
+        return self.total_profit * self.confidence
+
+    @property
+    def expected_per_hour(self) -> float:
+        return self.profit_per_hour * self.confidence
+
 
 # Tryby rankingu handlu w okolicy (jak sortowanie zysku w Trade Advisor TCE + "czas to pieniądz")
 RANK_MODES = {
@@ -514,11 +583,12 @@ RANK_MODES = {
 
 
 def _rank_key(mode: str):
+    # Rankingi liczą zysk OCZEKIWANY (ważony świeżością cen), nie nominalny
     if mode == "total":
-        return lambda t: (t.total_profit, -t.travel_s)
+        return lambda t: (t.expected_total, -t.travel_s)
     if mode == "time":
-        return lambda t: (-t.travel_s, t.total_profit)
-    return lambda t: (t.profit_per_hour, t.total_profit)
+        return lambda t: (-t.travel_s, t.expected_total)
+    return lambda t: (t.expected_per_hour, t.expected_total)
 
 
 def candidate_trades(commodity: str, reference_system: str, units: int, buy_price: int, market_filter,
@@ -713,6 +783,8 @@ class Hop:
     sell_price: int = 0
     profit: int = 0
     distance: float = 0.0
+    src_updated_at: float = 0.0   # epoch s — kiedy Spansh ostatnio widział ceny stacji kupna
+    dst_updated_at: float = 0.0   # … i stacji sprzedaży
 
 
 @dataclass
@@ -1357,11 +1429,7 @@ class TradeEngine:
 
         # Pierwszy segment: źródło = stacja startowa
         first = results[0]
-        first_src = first.get("source", {})
         first_dest = first.get("destination", {})
-
-        # Wyciągnij market_updated_at ze źródła pierwszego hopu (Feature A)
-        route._market_freshness_ts = first_src.get("market_updated_at", 0)
 
         # Ostatni segment: destination = końcówka trasy
         last = results[-1]
@@ -1382,6 +1450,8 @@ class TradeEngine:
             hop.destination_system = dst.get("system", "")
             hop.destination_station = dst.get("station", "")
             hop.distance = seg.get("distance", 0.0)
+            hop.src_updated_at = src.get("market_updated_at") or 0.0
+            hop.dst_updated_at = dst.get("market_updated_at") or 0.0
 
             # system_id64 destynacji hopa (dla Feature B — scoopable check)
             hop._destination_id64 = dst.get("system_id64", "")

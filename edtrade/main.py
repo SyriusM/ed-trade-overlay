@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .watcher import JournalWatcher
 from .filters import filter_from_config
+from .trade import market_from_market_json
 from .trade import (TradeEngine, ship_needs_large_pad, get_system_info, search_stations, find_material_traders,
                     find_mining_hotspots, find_mineral_buyers)
 from .overlay import TradeOverlay
@@ -23,7 +24,7 @@ from .window_watch import get_active_window
 from . import market_cache
 from .market_cache import init_market_cache
 from . import config as user_config_module
-from .checklist import RouteChecklist, load_commodity_names
+from .checklist import RouteChecklist, load_commodity_names, load_commodity_ids
 from typing import Optional
 
 logger = logging.getLogger("edto")
@@ -150,6 +151,7 @@ class EDTradeOverlayApp:
         self._bar_visible: bool = True
         self.checklist: Optional[RouteChecklist] = None
         self._commodity_names: dict[str, str] = {}
+        self._commodity_ids: dict[int, str] = {}
         self._cargo: list[dict] = []
         self._ship_large_pad = False
 
@@ -384,6 +386,20 @@ class EDTradeOverlayApp:
             )
         except Exception:
             logger.exception("Błąd w _on_market")
+        if self.panel is None:
+            return
+        # Ceny na żywo z gry dla bieżącej stacji — panel używa ich zamiast API (wiek 0)
+        try:
+            data = market_cache._load_market_json(self.watcher.journal_dir / "Market.json")
+            if data and data.get("MarketID") == event.get("MarketID"):
+                if not self._commodity_ids:
+                    self._commodity_ids = load_commodity_ids()
+                live = market_from_market_json(data, self._commodity_ids)
+                logger.info("Rynek na żywo: %s/%s — %d eksport, %d import", live.system_name, live.station_name,
+                            len(live.exports), len(live.imports))
+                self.panel.update_context(live_market=live)
+        except Exception:
+            logger.exception("Błąd odczytu Market.json (rynek na żywo)")
 
     def _on_materials(self, event: dict):
         """Reaguje na event Materials (start gry) — stan materiałów do zakładki Inżynieria."""

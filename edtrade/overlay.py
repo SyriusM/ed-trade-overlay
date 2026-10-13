@@ -11,7 +11,7 @@ import tkinter as tk
 from typing import Optional, Callable
 
 from . import tce_theme as tce
-from .trade import TradeRoute
+from .trade import TradeRoute, age_hours
 
 logger = logging.getLogger(__name__)
 
@@ -213,11 +213,11 @@ class TradeOverlay:
         extras = []
         if route.jumps > 0:
             extras.append(f"{route.jumps} SKOKI")
-        if getattr(route, '_market_freshness_ts', None):
-            import time
-            elapsed = int(time.time() - route._market_freshness_ts)
-            extras.append(f"{elapsed}s temu" if elapsed < 60 else
-                          f"{elapsed // 60}m temu" if elapsed < 3600 else f"{elapsed // 3600}h temu")
+        current = route.hops_list[hop_num - 1] if route.hops_list and 1 <= hop_num <= len(route.hops_list) else None
+        sell_age = age_hours(current.dst_updated_at) if current is not None else None
+        if sell_age is not None:
+            extras.append("CENY CELU " + (f"{sell_age:.0f}H" if sell_age < 48 else f"{sell_age / 24:.0f}D")
+                          + (" — MOGĄ BYĆ NIEAKTUALNE" if sell_age > 72 else ""))
         if getattr(route, '_scoopable', False):
             extras.append("⛽")
 
