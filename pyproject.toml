@@ -7,6 +7,7 @@ dependencies = ["requests"]
 
 [project.optional-dependencies]
 dev = ["pytest"]
+eddn = ["pyzmq"]  # ceny na żywo z EDDN (opcjonalnie)
 
 [project.scripts]
 edto = "edtrade.main:main"

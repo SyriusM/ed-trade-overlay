@@ -430,31 +430,31 @@ class TradePanel:
         self.settings_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         self.settings_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(self.settings_frame, text='Cel journey (system):').grid(row=0, column=0, sticky='w', padx=(0, 8), pady=4)
+        ttk.Label(self.settings_frame, text='Cel journey (system):').grid(row=0, column=0, sticky='w', padx=(0, 8), pady=2)
         self.journey_target_var = tk.StringVar(value=str(self.user_config.get('journey_target_system', '')))
-        ttk.Entry(self.settings_frame, textvariable=self.journey_target_var).grid(row=0, column=1, sticky='ew', pady=4)
+        ttk.Entry(self.settings_frame, textvariable=self.journey_target_var).grid(row=0, column=1, sticky='ew', pady=2)
 
-        ttk.Label(self.settings_frame, text='Zasięg statku (ly):').grid(row=1, column=0, sticky='w', padx=(0, 8), pady=4)
+        ttk.Label(self.settings_frame, text='Zasięg statku (ly):').grid(row=1, column=0, sticky='w', padx=(0, 8), pady=2)
         self.ship_range_var = tk.StringVar(value=str(self.user_config.get('ship_range_ly', 30.0)))
-        ttk.Entry(self.settings_frame, textvariable=self.ship_range_var).grid(row=1, column=1, sticky='ew', pady=4)
+        ttk.Entry(self.settings_frame, textvariable=self.ship_range_var).grid(row=1, column=1, sticky='ew', pady=2)
 
-        ttk.Label(self.settings_frame, text='Materiały (kind):').grid(row=2, column=0, sticky='w', padx=(0, 8), pady=4)
+        ttk.Label(self.settings_frame, text='Materiały (kind):').grid(row=2, column=0, sticky='w', padx=(0, 8), pady=2)
         self.material_kind_var = tk.StringVar(value=str(self.user_config.get('material_kind', '')))
         ttk.Combobox(self.settings_frame, textvariable=self.material_kind_var,
-                     values=['', 'Raw', 'Encoded', 'Manufactured'], state='readonly').grid(row=2, column=1, sticky='ew', pady=4)
+                     values=['', 'Raw', 'Encoded', 'Manufactured'], state='readonly').grid(row=2, column=1, sticky='ew', pady=2)
 
-        ttk.Label(self.settings_frame, text='Mining (minerał):').grid(row=3, column=0, sticky='w', padx=(0, 8), pady=4)
+        ttk.Label(self.settings_frame, text='Mining (minerał):').grid(row=3, column=0, sticky='w', padx=(0, 8), pady=2)
         self.mining_mineral_var = tk.StringVar(value=str(self.user_config.get('mining_mineral', '')))
-        ttk.Entry(self.settings_frame, textvariable=self.mining_mineral_var).grid(row=3, column=1, sticky='ew', pady=4)
+        ttk.Entry(self.settings_frame, textvariable=self.mining_mineral_var).grid(row=3, column=1, sticky='ew', pady=2)
 
-        ttk.Label(self.settings_frame, text='Klasa okna gry:').grid(row=4, column=0, sticky='w', padx=(0, 8), pady=4)
+        ttk.Label(self.settings_frame, text='Klasa okna gry:').grid(row=4, column=0, sticky='w', padx=(0, 8), pady=2)
         self.game_window_class_var = tk.StringVar(value=str(self.user_config.get('game_window_class', '')))
-        ttk.Entry(self.settings_frame, textvariable=self.game_window_class_var).grid(row=4, column=1, sticky='ew', pady=4)
+        ttk.Entry(self.settings_frame, textvariable=self.game_window_class_var).grid(row=4, column=1, sticky='ew', pady=2)
 
         self.bar_only_var = tk.BooleanVar(value=bool(self.user_config.get('bar_only_when_game_focused', False)))
         self.auto_copy_var = tk.BooleanVar(value=bool(self.user_config.get('auto_copy_system', True)))
         options_line = ttk.Frame(self.settings_frame)
-        options_line.grid(row=5, column=1, sticky='w', pady=4)
+        options_line.grid(row=5, column=1, sticky='w', pady=2)
         ttk.Checkbutton(options_line, text='Pasek tylko gdy gra ma fokus', variable=self.bar_only_var).pack(side=tk.LEFT, padx=(0, 16))
         ttk.Checkbutton(options_line, text='Po zmianie trasy kopiuj do schowka:', variable=self.auto_copy_var,
                         command=lambda: self.user_config.__setitem__('auto_copy_system', bool(self.auto_copy_var.get()))
@@ -471,21 +471,21 @@ class TradePanel:
         self.max_star_var = tk.StringVar(value=str(self.user_config.get('max_star_distance_ls', 5000)))
         self.market_type_var = tk.StringVar(value=MARKET_TYPE_LABELS.get(self.user_config.get('market_type', 'all'),
                                                                          MARKET_TYPE_LABELS['all']))
-        ttk.Label(self.settings_frame, text='Minimalny pad:').grid(row=6, column=0, sticky='w', padx=(0, 8), pady=4)
+        ttk.Label(self.settings_frame, text='Minimalny pad:').grid(row=6, column=0, sticky='w', padx=(0, 8), pady=2)
         ttk.Combobox(self.settings_frame, textvariable=self.pad_filter_var, values=list(PAD_FILTER_LABELS.values()),
-                     state='readonly').grid(row=6, column=1, sticky='ew', pady=4)
+                     state='readonly').grid(row=6, column=1, sticky='ew', pady=2)
         ttk.Label(self.settings_frame, text='Maks. od gwiazdy (ls, 0 = bez limitu):').grid(
-            row=7, column=0, sticky='w', padx=(0, 8), pady=4)
-        ttk.Entry(self.settings_frame, textvariable=self.max_star_var).grid(row=7, column=1, sticky='ew', pady=4)
-        ttk.Label(self.settings_frame, text='Typ rynku:').grid(row=8, column=0, sticky='w', padx=(0, 8), pady=4)
+            row=7, column=0, sticky='w', padx=(0, 8), pady=2)
+        ttk.Entry(self.settings_frame, textvariable=self.max_star_var).grid(row=7, column=1, sticky='ew', pady=2)
+        ttk.Label(self.settings_frame, text='Typ rynku:').grid(row=8, column=0, sticky='w', padx=(0, 8), pady=2)
         ttk.Combobox(self.settings_frame, textvariable=self.market_type_var, values=list(MARKET_TYPE_LABELS.values()),
-                     state='readonly').grid(row=8, column=1, sticky='ew', pady=4)
+                     state='readonly').grid(row=8, column=1, sticky='ew', pady=2)
         self.min_profit_var = tk.StringVar(value=str(self.user_config.get('min_profit_per_t', 500)))
         self.max_age_var = tk.StringVar(value=str(self.user_config.get('max_data_age_days', 7)))
-        ttk.Label(self.settings_frame, text='Min. zysk (cr/t):').grid(row=9, column=0, sticky='w', padx=(0, 8), pady=4)
-        ttk.Entry(self.settings_frame, textvariable=self.min_profit_var).grid(row=9, column=1, sticky='ew', pady=4)
-        ttk.Label(self.settings_frame, text='Maks. wiek cen (dni):').grid(row=10, column=0, sticky='w', padx=(0, 8), pady=4)
-        ttk.Entry(self.settings_frame, textvariable=self.max_age_var).grid(row=10, column=1, sticky='ew', pady=4)
+        ttk.Label(self.settings_frame, text='Min. zysk (cr/t):').grid(row=9, column=0, sticky='w', padx=(0, 8), pady=2)
+        ttk.Entry(self.settings_frame, textvariable=self.min_profit_var).grid(row=9, column=1, sticky='ew', pady=2)
+        ttk.Label(self.settings_frame, text='Maks. wiek cen (dni):').grid(row=10, column=0, sticky='w', padx=(0, 8), pady=2)
+        ttk.Entry(self.settings_frame, textvariable=self.max_age_var).grid(row=10, column=1, sticky='ew', pady=2)
 
         self.bar_alpha_var = tk.DoubleVar(value=float(self.user_config.get('bar_alpha', 0.75)))
         self.bar_scale_var = tk.DoubleVar(value=float(self.user_config.get('bar_font_scale', 1.0)))
@@ -494,9 +494,9 @@ class TradePanel:
                 ('Przezroczystość paska:', self.bar_alpha_var, 0.3, 1.0),
                 ('Czcionka paska (skala):', self.bar_scale_var, 0.7, 1.8),
                 ('Czcionka panelu (skala):', self.panel_scale_var, 0.7, 1.8)), start=11):
-            ttk.Label(self.settings_frame, text=title).grid(row=row, column=0, sticky='w', padx=(0, 8), pady=4)
+            ttk.Label(self.settings_frame, text=title).grid(row=row, column=0, sticky='w', padx=(0, 8), pady=2)
             line = ttk.Frame(self.settings_frame)
-            line.grid(row=row, column=1, sticky='ew', pady=4)
+            line.grid(row=row, column=1, sticky='ew', pady=2)
             value = ttk.Label(line, text=f'{var.get():.2f}', width=5)
             value.pack(side=tk.RIGHT)
             ttk.Scale(line, from_=lo, to=hi, variable=var, orient=tk.HORIZONTAL,
@@ -506,26 +506,38 @@ class TradePanel:
         # Ocena okazji: ikonki i opis osobno (kolor zostaje zawsze) — działa na żywo, ZAPISZ utrwala
         self.verdict_icons_var = tk.BooleanVar(value=bool(self.user_config.get('verdict_icons', True)))
         self.verdict_labels_var = tk.BooleanVar(value=bool(self.user_config.get('verdict_labels', True)))
-        ttk.Label(self.settings_frame, text='Ocena okazji:').grid(row=14, column=0, sticky='w', padx=(0, 8), pady=4)
+        ttk.Label(self.settings_frame, text='Ocena okazji:').grid(row=14, column=0, sticky='w', padx=(0, 8), pady=2)
         verdict_line = ttk.Frame(self.settings_frame)
-        verdict_line.grid(row=14, column=1, sticky='w', pady=4)
+        verdict_line.grid(row=14, column=1, sticky='w', pady=2)
         for text, var in (('Ikonki (= ≈ ▲ ▼)', self.verdict_icons_var), ('Opis (OPTIMAL, SAFE…)', self.verdict_labels_var)):
             ttk.Checkbutton(verdict_line, text=text, variable=var,
                             command=self._verdict_display_changed).pack(side=tk.LEFT, padx=(0, 16))
 
         # Profil ryzyka — jak program wybiera okazje i trasy (OKOLICA, szybka trasa, przeplanowanie)
         self.risk_profile_var = tk.StringVar(value=trade_mod.RISK_PROFILES[trade_mod.RISK_PROFILE])
-        ttk.Label(self.settings_frame, text='Profil ryzyka:').grid(row=15, column=0, sticky='w', padx=(0, 8), pady=4)
+        ttk.Label(self.settings_frame, text='Profil ryzyka:').grid(row=15, column=0, sticky='w', padx=(0, 8), pady=2)
         profile_combo = ttk.Combobox(self.settings_frame, textvariable=self.risk_profile_var,
                                      values=list(trade_mod.RISK_PROFILES.values()), state='readonly')
-        profile_combo.grid(row=15, column=1, sticky='ew', pady=4)
+        profile_combo.grid(row=15, column=1, sticky='ew', pady=2)
         profile_combo.bind('<<ComboboxSelected>>', lambda _e: self._risk_profile_changed())
 
-        self.save_settings_btn = ttk.Button(self.settings_frame, text='Zapisz', command=self.save_settings)
-        self.save_settings_btn.grid(row=16, column=1, sticky='w', pady=(10, 4))
+        # EDDN — ceny od wszystkich graczy na żywo (zmiana działa po restarcie programu)
+        self.eddn_var = tk.BooleanVar(value=bool(self.user_config.get('eddn_enabled', True)))
+        ttk.Label(self.settings_frame, text='Ceny na żywo (EDDN):').grid(row=16, column=0, sticky='w', padx=(0, 8), pady=2)
+        eddn_line = ttk.Frame(self.settings_frame)
+        eddn_line.grid(row=16, column=1, sticky='w', pady=2)
+        ttk.Checkbutton(eddn_line, text='Włączone (po restarcie)', variable=self.eddn_var).pack(side=tk.LEFT)
+        self.eddn_status = ttk.Label(eddn_line, text='')
+        self.eddn_status.pack(side=tk.LEFT, padx=(16, 0))
+        self.window.after(2000, self._eddn_tick)  # main uruchamia nasłuch po utworzeniu panelu
 
+        # Zapisz zawsze widoczny na dole strony (ustawień jest więcej niż wysokość okna)
+        footer = ttk.Frame(self.tab_settings)
+        footer.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=(0, 8), before=self.settings_frame)
+        self.save_settings_btn = ttk.Button(footer, text='Zapisz', command=self.save_settings)
+        self.save_settings_btn.pack(side=tk.LEFT)
         self.settings_status_var = tk.StringVar(value='')
-        ttk.Label(self.settings_frame, textvariable=self.settings_status_var).grid(row=17, column=1, sticky='w', pady=4)
+        ttk.Label(footer, textvariable=self.settings_status_var).pack(side=tk.LEFT, padx=12)
 
         tce.uppercase_static_texts(self.window)
         self._render_context()
@@ -549,6 +561,17 @@ class TradePanel:
             self.nav.select_frame(start_page)
         self._bind_all_row_actions()
         self.window.bind('<Configure>', self._schedule_layout_save, add='+')
+
+    def _eddn_tick(self) -> None:
+        """Status EDDN co 30 s: połączenie i ile rynków jest w lokalnej bazie."""
+        db = trade_mod.PRICE_DB
+        if db is None:
+            text = 'wyłączone' if not self.eddn_var.get() else 'niedostępne — zainstaluj pyzmq'
+        else:
+            markets, _ = db.count()
+            text = f'baza: {markets:,} rynków · w tej sesji: {db.messages:,}'
+        self.eddn_status.configure(text=text.upper())
+        self.window.after(30_000, self._eddn_tick)
 
     def _risk_profile_key(self) -> str:
         return next((k for k, v in trade_mod.RISK_PROFILES.items() if v == self.risk_profile_var.get()), 'optimal')
@@ -1646,6 +1669,7 @@ class TradePanel:
             'auto_copy_system': bool(self.auto_copy_var.get()),
             'copy_target': self._copy_target_key(),
             'risk_profile': self._risk_profile_key(),
+            'eddn_enabled': bool(self.eddn_var.get()),
             'verdict_icons': bool(self.verdict_icons_var.get()),
             'verdict_labels': bool(self.verdict_labels_var.get()),
         })

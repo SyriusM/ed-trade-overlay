@@ -11,6 +11,7 @@ import re
 import subprocess
 import threading
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -665,6 +666,21 @@ def _rank_key(mode: str, profile: Optional[str] = None):
     return lambda t: (t.profit_per_hour * w(t), t.total_profit * w(t))
 
 
+PRICE_DB = None  # edtrade.price_db.PriceDB z EDDN — ustawiane przez main, gdy nasłuch działa
+
+
+def fresher_price(system: str, station: str, commodity: str, updated_at) -> Optional["object"]:
+    """Cena z lokalnej bazy EDDN, jeśli jest świeższa niż dane API (inaczej None)."""
+    if PRICE_DB is None:
+        return None
+    rec = PRICE_DB.get(system, station, commodity)
+    if rec is None:
+        return None
+    hours = age_hours(updated_at)
+    api_epoch = time.time() - hours * 3600 if hours is not None else 0.0
+    return rec if rec.updated_at > api_epoch + 60 else None
+
+
 def candidate_trades(commodity: str, reference_system: str, units: int, buy_price: int, market_filter,
                      max_ly: float = 40.0, exclude_market: str = "", jump_range: float = 30.0) -> list[NearbyTrade]:
     """Wszyscy opłacalni kupcy w zasięgu (po filtrze) — wybór najlepszego zależy od trybu rankingu."""
@@ -675,10 +691,17 @@ def candidate_trades(commodity: str, reference_system: str, units: int, buy_pric
             continue
         if exclude_market and b.station_name.lower() == exclude_market.lower() and b.system_name.lower() == reference_system.lower():
             continue
-        trade = NearbyTrade(commodity=commodity, buy_price=buy_price, units=min(units, b.demand),
-                            sell_station=b.station_name, sell_system=b.system_name, sell_price=b.sell_price,
-                            demand=b.demand, distance=b.distance, distance_to_arrival=b.distance_to_arrival,
-                            pad_size=b.pad_size, station_type=b.station_type, updated_at=b.updated_at,
+        sell_price, demand, updated_at = b.sell_price, b.demand, b.updated_at
+        fresher = fresher_price(b.system_name, b.station_name, commodity, b.updated_at)
+        if fresher is not None:  # bez modyfikacji b — obiekty kupców są współdzielone z pamięcią podręczną
+            if fresher.sell_price <= 0 or fresher.demand <= 1:
+                continue  # EDDN: stacja już tego nie skupuje
+            sell_price, demand = fresher.sell_price, fresher.demand
+            updated_at = datetime.fromtimestamp(fresher.updated_at, timezone.utc).isoformat()
+        trade = NearbyTrade(commodity=commodity, buy_price=buy_price, units=min(units, demand),
+                            sell_station=b.station_name, sell_system=b.system_name, sell_price=sell_price,
+                            demand=demand, distance=b.distance, distance_to_arrival=b.distance_to_arrival,
+                            pad_size=b.pad_size, station_type=b.station_type, updated_at=updated_at,
                             travel_s=travel_seconds(b.distance, b.distance_to_arrival, jump_range))
         # Ładunek w ładowni (buy_price 0) — liczy się każda sprzedaż; zakup tutaj — co najmniej min. zysk/t
         min_profit = market_filter.min_profit_per_t if buy_price else 1

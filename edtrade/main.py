@@ -22,6 +22,8 @@ from .trade import (TradeEngine, ship_needs_large_pad, get_system_info, search_s
 from .overlay import TradeOverlay, compact_cr
 from .session import SessionLedger
 from .pilot import PilotCalibration
+from .price_db import PriceDB
+from .eddn import EDDNListener
 from . import assess, verify
 from . import trade as trade_module
 from datetime import datetime, timezone
@@ -193,6 +195,14 @@ class EDTradeOverlayApp:
         self._cargo: list[dict] = []
         self._ship_large_pad = False
         self.session = SessionLedger()
+        self.eddn = None
+        if self.user_config.get('eddn_enabled', True) and EDDNListener.available():
+            try:
+                trade_module.PRICE_DB = PriceDB()
+                self.eddn = EDDNListener(trade_module.PRICE_DB)
+                self.eddn.start()
+            except Exception:
+                logger.exception("EDDN: start nasłuchu")
         self.pilot = PilotCalibration()
         trade_module.set_pilot_factor(self.pilot.factor)
         if self.panel is not None:
@@ -279,6 +289,13 @@ class EDTradeOverlayApp:
     def _publish_route(self, route, system: str, station: str) -> None:
         """Nowa trasa → nowa checklista (kup → leć → sprzedaj) i wysłanie do overlaya."""
         self.checklist = None
+        if trade_module.PRICE_DB is not None and not route.error and route.hops_list:
+            if not self._commodity_names:
+                self._commodity_names = load_commodity_names()
+            symbol_of = {v.lower(): k for k, v in self._commodity_names.items()}
+            n = verify.refresh_route_from_db(route, trade_module.PRICE_DB, symbol_of)
+            if n:
+                logger.info("EDDN: %d cen na trasie zastąpionych świeższymi", n)
         if not route.error and route.hops_list:
             if not self._commodity_names:
                 self._commodity_names = load_commodity_names()

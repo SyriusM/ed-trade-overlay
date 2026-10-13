@@ -75,3 +75,26 @@ def check_sell(hop: Hop, live: StationMarket, names: dict[str, str], hop_index: 
     hop.profit = (hop.sell_price - hop.buy_price) * hop.amount
     hop.dst_updated_at = time.time()
     return LiveCheck(level, text, SELL, hop_index)
+
+
+def refresh_route_from_db(route, db, symbol_of: dict[str, str]) -> int:
+    """Hopy trasy (Spansh) z cenami z lokalnej bazy EDDN, jeśli świeższe. Zwraca liczbę poprawionych cen.
+
+    symbol_of: nazwa wyświetlana (lowercase) → symbol (np. "void opal" → "opal").
+    """
+    changed = 0
+    for hop in route.hops_list or []:
+        symbol = symbol_of.get(hop.commodity.lower(), hop.commodity.lower())
+        old_profit = hop.profit
+        src = db.get(hop.source_system, hop.source_station, symbol)
+        if src is not None and src.updated_at > (hop.src_updated_at or 0) and src.buy_price > 0:
+            hop.buy_price, hop.src_updated_at = src.buy_price, src.updated_at
+            changed += 1
+        dst = db.get(hop.destination_system, hop.destination_station, symbol)
+        if dst is not None and dst.updated_at > (hop.dst_updated_at or 0) and dst.sell_price > 0:
+            hop.sell_price, hop.dst_updated_at = dst.sell_price, dst.updated_at
+            changed += 1
+        if hop.profit:
+            hop.profit = (hop.sell_price - hop.buy_price) * hop.amount
+            route.total_profit += hop.profit - old_profit
+    return changed
