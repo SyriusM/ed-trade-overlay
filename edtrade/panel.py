@@ -12,7 +12,7 @@ from tkinter import ttk
 from typing import Optional
 from .config import load_user_config, save_user_config
 from datetime import datetime, timezone
-from .trade import get_system_info, search_stations, find_material_traders, find_mining_hotspots, find_mineral_buyers, find_commodity_sellers, TradeEngine
+from .trade import get_system_info, search_stations, find_material_traders, find_mining_hotspots, find_mineral_buyers, find_commodity_sellers, get_station_market, TradeEngine
 
 COMMODITY_MODES = ('Kup', 'Sprzedaj')
 
@@ -33,8 +33,32 @@ def _data_age(updated_at: str, now: Optional[datetime] = None) -> str:
 logger = logging.getLogger(__name__)
 
 
+def _vs_mean(price: int, mean: int) -> str:
+    """Cena wzgledem sredniej galaktycznej, np. '+12%'."""
+    return f'{(price - mean) / mean * 100:+.0f}%' if mean else '?'
+
+
+def _format_market(market, limit: int = 25) -> list[str]:
+    """Tekst zakladki Market: naglowek z wiekiem danych, potem 'kupisz tu' i 'sprzedasz tu'."""
+    lines = [f'{market.station_name} ({market.system_name})']
+    if market.error:
+        return lines + ['', f'Błąd: {market.error}']
+    lines[0] += f' | dane {_data_age(market.updated_at)}'
+    lines += ['', f'KUPISZ TU ({len(market.exports)}), najtaniej względem średniej:']
+    for i in market.exports[:limit]:
+        lines.append(f'  - {i.name}: {i.buy_price:,}cr ({_vs_mean(i.buy_price, i.mean_price)} vs śr.), zapas {i.stock:,}')
+    if not market.exports:
+        lines.append('  (nic)')
+    lines += ['', f'SPRZEDASZ TU ({len(market.imports)}), najdrożej najpierw:']
+    for i in market.imports[:limit]:
+        lines.append(f'  - {i.name}: {i.sell_price:,}cr ({_vs_mean(i.sell_price, i.mean_price)} vs śr.), popyt {i.demand:,}')
+    if not market.imports:
+        lines.append('  (nic)')
+    return lines
+
+
 class TradePanel:
-    """Osobne okno z zakładkami (System/Materiały/Mining/Towary/Journey/Ustawienia)."""
+    """Osobne okno z zakładkami (System/Materiały/Mining/Towary/Market/Journey/Ustawienia)."""
 
     def __init__(self, master: tk.Tk, user_config: Optional[dict] = None, config_path: Optional[Path] = None):
         self.master = master
@@ -125,6 +149,25 @@ class TradePanel:
         self.commodity_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
         self.commodity_text.insert('1.0', '(wpisz system i towar, wybierz Kup/Sprzedaj, kliknij Szukaj)')
         self.commodity_text.config(state=tk.DISABLED)
+
+        self.tab_market = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_market, text='Market')
+
+        self.market_system_var = tk.StringVar(value='Sol')
+        self.market_station_var = tk.StringVar(value='Abraham Lincoln')
+        self.market_entry_frame = ttk.Frame(self.tab_market)
+        self.market_entry_frame.pack(fill=tk.X, padx=10, pady=(10, 4))
+        ttk.Label(self.market_entry_frame, text='System:').pack(side=tk.LEFT)
+        ttk.Entry(self.market_entry_frame, textvariable=self.market_system_var, width=18).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(self.market_entry_frame, text='Stacja:').pack(side=tk.LEFT)
+        ttk.Entry(self.market_entry_frame, textvariable=self.market_station_var, width=22).pack(side=tk.LEFT, padx=(4, 10))
+        self.market_btn = ttk.Button(self.market_entry_frame, text='Pokaż', command=self.refresh_market_tab)
+        self.market_btn.pack(side=tk.LEFT)
+
+        self.market_text = tk.Text(self.tab_market, height=20, width=80, wrap=tk.WORD)
+        self.market_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
+        self.market_text.insert('1.0', '(wpisz system i stację, kliknij Pokaż)')
+        self.market_text.config(state=tk.DISABLED)
 
         self.tab_journey = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_journey, text='Journey')
@@ -364,6 +407,38 @@ class TradePanel:
         """Wywolywane w watku Tk: pokaz wynik i odblokuj przycisk."""
         self._set_commodity_text(text)
         self.commodity_btn.config(state=tk.NORMAL)
+
+    def _set_market_text(self, text: str) -> None:
+        self.market_text.config(state=tk.NORMAL)
+        self.market_text.delete('1.0', tk.END)
+        self.market_text.insert('1.0', text)
+        self.market_text.config(state=tk.DISABLED)
+
+    def refresh_market_tab(self) -> None:
+        """Waliduj w watku Tk i pobierz pelny rynek stacji w watku roboczym (UI nie zamarza)."""
+        system_name = self.market_system_var.get().strip()
+        station_name = self.market_station_var.get().strip()
+        if not system_name or not station_name:
+            return
+        self.market_btn.config(state=tk.DISABLED)
+        self._set_market_text(f'{station_name} ({system_name})\n\nPobieram rynek...')
+        threading.Thread(target=self._market_worker, args=(system_name, station_name), daemon=True).start()
+
+    def _market_worker(self, system_name: str, station_name: str) -> None:
+        """Watek roboczy: NIE dotyka widgetow Tk — liczy i oddaje tekst przez after(0)."""
+        try:
+            lines = _format_market(get_station_market(system_name, station_name))
+        except Exception as e:
+            lines = [f'{station_name} ({system_name})', '', f'Błąd: {e}']
+        try:
+            self.window.after(0, self._market_done, '\n'.join(lines))
+        except Exception:
+            pass
+
+    def _market_done(self, text: str) -> None:
+        """Wywolywane w watku Tk: pokaz wynik i odblokuj przycisk."""
+        self._set_market_text(text)
+        self.market_btn.config(state=tk.NORMAL)
 
     def _set_journey_text(self, text: str) -> None:
         self.journey_text.config(state=tk.NORMAL)

@@ -156,3 +156,38 @@ class TestSearchStations(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestStationMarket(unittest.TestCase):
+    """Filtrowanie rynku stacji — bez sieci (requests.get podmienione)."""
+
+    def _run(self, rows, status=200, station="Abraham Lincoln"):
+        from unittest import mock
+        from edtrade import trade
+        resp = mock.Mock(status_code=status, json=mock.Mock(return_value=rows), raise_for_status=mock.Mock())
+        with mock.patch.object(trade.requests, "get", return_value=resp):
+            return trade.get_station_market("Sol", station)
+
+    def test_filters_and_sorts(self):
+        def row(name, station="Abraham Lincoln", **kw):
+            base = {"commodityName": name, "stationName": station, "buyPrice": 0, "sellPrice": 0,
+                    "stock": 0, "demand": 0, "meanPrice": 100, "updatedAt": "2026-10-13T10:00:00.000Z"}
+            return {**base, **kw}
+        rows = [
+            row("cheap", buyPrice=50, stock=10),
+            row("pricey", buyPrice=150, stock=10),
+            row("nodemand", sellPrice=999),
+            row("good", sellPrice=300, demand=5),
+            row("better", sellPrice=400, demand=5, updatedAt="2026-10-13T11:00:00.000Z"),
+            row("other", station="Daedalus", sellPrice=5000, demand=5),
+        ]
+        m = self._run(rows, station="abraham lincoln")
+        self.assertEqual(m.error, "")
+        self.assertEqual(m.station_name, "Abraham Lincoln")
+        self.assertEqual([i.name for i in m.exports], ["cheap", "pricey"])
+        self.assertEqual([i.name for i in m.imports], ["better", "good"])
+        self.assertEqual(m.updated_at, "2026-10-13T11:00:00.000Z")
+
+    def test_unknown_station_and_system(self):
+        self.assertIn("Brak danych", self._run([], station="X").error)
+        self.assertIn("nie znaleziony", self._run({}, status=404).error)
