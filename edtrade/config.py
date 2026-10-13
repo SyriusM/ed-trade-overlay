@@ -34,6 +34,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     'max_data_age_days': 7,
     'panel_geometry': '1100x700',
     'panel_page': 'Trasa',
+    'verdict_icons': True,    # ocena okazji: ikonki (= ≈ ▲ ▲▲ ▼ ▼▼)
+    'verdict_labels': True,   # ocena okazji: opis (OPTIMAL, VERY SAFE…)
 }
 
 

@@ -102,7 +102,8 @@ class TradePanel:
     """Osobne okno z zakładkami (System/Materiały/Mining/Towary/Market/Journey/Inżynieria/Ustawienia)."""
 
     def __init__(self, master: tk.Tk, user_config: Optional[dict] = None, config_path: Optional[Path] = None,
-                 on_appearance_change: Optional[Callable[[float, float], None]] = None):
+                 on_appearance_change: Optional[Callable[[float, float], None]] = None,
+                 on_verdict_display_change: Optional[Callable[[], None]] = None):
         self.master = master
         self.config_path = config_path
         self.user_config = user_config if user_config is not None else load_user_config(config_path)
@@ -116,6 +117,8 @@ class TradePanel:
         # X minimalizuje okno zamiast je niszczyć — panel wraca z paska zadań / Alt-Tab
         self.window.protocol('WM_DELETE_WINDOW', self.window.iconify)
         self.on_appearance_change = on_appearance_change
+        self.on_verdict_display_change = on_verdict_display_change
+        assess.set_display(self.user_config.get('verdict_icons', True), self.user_config.get('verdict_labels', True))
         self.fonts = tce.Fonts(self.window, scale=float(self.user_config.get('panel_font_scale', 1.0)))
         tce.apply_ttk_theme(self.window, self.fonts)
 
@@ -483,11 +486,21 @@ class TradePanel:
                       command=lambda _v, var=var, value=value: self._appearance_preview(var, value)).pack(
                 side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
 
+        # Ocena okazji: ikonki i opis osobno (kolor zostaje zawsze) — działa na żywo, ZAPISZ utrwala
+        self.verdict_icons_var = tk.BooleanVar(value=bool(self.user_config.get('verdict_icons', True)))
+        self.verdict_labels_var = tk.BooleanVar(value=bool(self.user_config.get('verdict_labels', True)))
+        ttk.Label(self.settings_frame, text='Ocena okazji:').grid(row=14, column=0, sticky='w', padx=(0, 8), pady=4)
+        verdict_line = ttk.Frame(self.settings_frame)
+        verdict_line.grid(row=14, column=1, sticky='w', pady=4)
+        for text, var in (('Ikonki (= ≈ ▲ ▼)', self.verdict_icons_var), ('Opis (OPTIMAL, SAFE…)', self.verdict_labels_var)):
+            ttk.Checkbutton(verdict_line, text=text, variable=var,
+                            command=self._verdict_display_changed).pack(side=tk.LEFT, padx=(0, 16))
+
         self.save_settings_btn = ttk.Button(self.settings_frame, text='Zapisz', command=self.save_settings)
-        self.save_settings_btn.grid(row=14, column=1, sticky='w', pady=(10, 4))
+        self.save_settings_btn.grid(row=15, column=1, sticky='w', pady=(10, 4))
 
         self.settings_status_var = tk.StringVar(value='')
-        ttk.Label(self.settings_frame, textvariable=self.settings_status_var).grid(row=15, column=1, sticky='w', pady=4)
+        ttk.Label(self.settings_frame, textvariable=self.settings_status_var).grid(row=16, column=1, sticky='w', pady=4)
 
         tce.uppercase_static_texts(self.window)
         self._render_context()
@@ -511,6 +524,16 @@ class TradePanel:
             self.nav.select_frame(start_page)
         self._bind_all_row_actions()
         self.window.bind('<Configure>', self._schedule_layout_save, add='+')
+
+    def _verdict_display_changed(self) -> None:
+        """Podgląd na żywo: tabele OKOLICY, linia SWOT i pasek w grze (bez sieci — z zapamiętanych danych)."""
+        assess.set_display(self.verdict_icons_var.get(), self.verdict_labels_var.get())
+        if self._nearby_meta is not None:
+            self._render_nearby()
+        elif self._cargo_meta is not None:
+            self._render_cargo()
+        if self.on_verdict_display_change is not None:
+            self.on_verdict_display_change()
 
     def _appearance_preview(self, var: tk.DoubleVar, value_label: ttk.Label) -> None:
         """Suwaki CONTROL działają na żywo; zapis do configu dopiero przyciskiem ZAPISZ."""
@@ -1570,6 +1593,8 @@ class TradePanel:
             'market_type': market_type,
             'min_profit_per_t': min_profit,
             'max_data_age_days': max_age,
+            'verdict_icons': bool(self.verdict_icons_var.get()),
+            'verdict_labels': bool(self.verdict_labels_var.get()),
         })
 
         # Zapisz do pliku

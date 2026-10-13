@@ -17,6 +17,17 @@ STRONG_ICONS = {OPTIMAL: "≈", SAFE: "▲▲", RISKY: "▼▼"}
 STRONG_LABELS = {OPTIMAL: "NOT OPTIMAL", SAFE: "VERY SAFE", RISKY: "VERY RISKY"}
 STRONG_FROM = 0.5
 
+# Co pokazywać przy ocenie (Ustawienia: ikonki / opis, każde osobno włącz/wyłącz). Kolor zostaje zawsze.
+DISPLAY = {"icons": True, "labels": True}
+
+
+def set_display(icons: bool, labels: bool) -> None:
+    DISPLAY["icons"], DISPLAY["labels"] = bool(icons), bool(labels)
+
+
+def compose(icon: str, label: str) -> str:
+    return " ".join(p for p, on in ((icon, DISPLAY["icons"]), (label, DISPLAY["labels"])) if on)
+
 RISKY_FROM = 0.45     # ryzyko od tego progu → RISKY
 OPTIMAL_FROM = 0.75   # wartość ≥ 75% najlepszej (przy umiarkowanym ryzyku) → OPTIMAL
 SAFE_UNTIL = 0.25     # niskie ryzyko, mniejszy zysk → SAFE
@@ -52,7 +63,7 @@ class Assessment:
 
 def badge_for(verdict: str, shade: float) -> str:
     strong = shade >= STRONG_FROM
-    return f"{(STRONG_ICONS if strong else ICONS)[verdict]} {(STRONG_LABELS if strong else LABELS)[verdict]}"
+    return compose((STRONG_ICONS if strong else ICONS)[verdict], (STRONG_LABELS if strong else LABELS)[verdict])
 
 
 def age_risk(hours: Optional[float]) -> float:
@@ -163,7 +174,8 @@ def assess_route_hop(age_h: Optional[float]) -> tuple[str, float]:
 # --- Ładownia: trzymać czy sprzedać? -------------------------------------------------------------
 
 SELL_HERE, SELL_THERE, HOLD = "sell_here", "sell_there", "hold"
-CARGO_BADGES = {SELL_HERE: "= SELL HERE", SELL_THERE: "► SELL THERE", HOLD: "■ HOLD"}
+CARGO_ICONS = {SELL_HERE: "=", SELL_THERE: "►", HOLD: "■"}
+CARGO_LABELS = {SELL_HERE: "SELL HERE", SELL_THERE: "SELL THERE", HOLD: "HOLD"}
 
 
 @dataclass
@@ -172,7 +184,7 @@ class CargoAdvice(Assessment):
 
     @property
     def badge(self) -> str:
-        return CARGO_BADGES[self.action]
+        return compose(CARGO_ICONS[self.action], CARGO_LABELS[self.action])
 
 
 def advise_cargo(count: int, best=None, best_assessment: Optional[Assessment] = None,

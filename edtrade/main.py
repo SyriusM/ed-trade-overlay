@@ -20,6 +20,7 @@ from .trade import (TradeEngine, ship_needs_large_pad, get_system_info, search_s
                     find_mining_hotspots, find_mineral_buyers)
 from .overlay import TradeOverlay, compact_cr
 from .session import SessionLedger
+from . import assess
 from .panel import TradePanel
 from .window_watch import get_active_window
 from . import market_cache
@@ -120,6 +121,7 @@ class EDTradeOverlayApp:
         )
         self._show_overlay = not args.no_overlay
         self.user_config = user_config_module.load_user_config()
+        assess.set_display(self.user_config.get('verdict_icons', True), self.user_config.get('verdict_labels', True))
         self.overlay = TradeOverlay() if self._show_overlay else None
         if self.overlay is not None:
             self.overlay.apply_appearance(float(self.user_config.get('bar_alpha', 0.75)),
@@ -128,7 +130,8 @@ class EDTradeOverlayApp:
         if self.overlay is not None and not args.no_panel:
             try:
                 self.panel = TradePanel(self.overlay.master, user_config=self.user_config,
-                                        on_appearance_change=self.overlay.apply_appearance)
+                                        on_appearance_change=self.overlay.apply_appearance,
+                                        on_verdict_display_change=self.overlay._refresh_now)
                 logger.info("TradePanel utworzony (zakładki: System/Materiały/Mining/Journey)")
             except Exception:
                 logger.exception("Nie udało się utworzyć TradePanel")

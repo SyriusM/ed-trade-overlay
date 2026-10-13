@@ -111,3 +111,16 @@ def test_six_step_scale():
     assert assess.assess_all([trade(age=24 * 5)], v)[0].badge == "▼ RISKY"
     assert assess.assess_all([trade(age=24 * 10, demand=256)], v)[0].badge == "▼▼ VERY RISKY"
     assert assess.badge_for("safe", 0.2) == "▲ SAFE"
+
+
+def test_display_toggles():
+    try:
+        assess.set_display(icons=False, labels=True)
+        assert assess.badge_for("safe", 0.9) == "VERY SAFE"
+        assess.set_display(icons=True, labels=False)
+        assert assess.badge_for("optimal", 0.7) == "≈"
+        assert assess.advise_cargo(10, None).badge == "■"
+        assess.set_display(icons=False, labels=False)
+        assert assess.badge_for("risky", 0.0) == ""
+    finally:
+        assess.set_display(True, True)
