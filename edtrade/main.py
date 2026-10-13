@@ -238,6 +238,13 @@ class EDTradeOverlayApp:
         self._dock_count += 1
         logger.info("Docked #%d: %s/%s", self._dock_count, system, station)
 
+        # Panel: rynek bieżącej stacji od razu, przed długim liczeniem trasy w Spansh
+        if self.panel is not None:
+            try:
+                self.panel.show_docked_station(system, station)
+            except Exception:
+                logger.exception("Błąd przekazania stacji do panelu")
+
         # Wylicz trasę przez Spansh API (nie blokuje overlaya)
         route = self.trade_engine.calculate_route_via_spansh(system, station)
 

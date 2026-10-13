@@ -408,6 +408,19 @@ class TradePanel:
         self._set_commodity_text(text)
         self.commodity_btn.config(state=tk.NORMAL)
 
+    def show_docked_station(self, system_name: str, station_name: str) -> None:
+        """Wolane z watku watchera po Docked: przekaz do watku Tk przez after(0)."""
+        self.window.after(0, self._show_docked_station_inner, system_name, station_name)
+
+    def _show_docked_station_inner(self, system_name: str, station_name: str) -> None:
+        """Wpisz biezacy system/stacje w zakladki i odswiez Market (inne zakladki tylko wypelnione, bez sieci)."""
+        for var in (self.system_entry_var, self.materials_system_var, self.mining_system_var,
+                    self.commodity_system_var, self.market_system_var):
+            var.set(system_name)
+        self.market_station_var.set(station_name)
+        if str(self.market_btn['state']) != tk.DISABLED:
+            self.refresh_market_tab()
+
     def _set_market_text(self, text: str) -> None:
         self.market_text.config(state=tk.NORMAL)
         self.market_text.delete('1.0', tk.END)
