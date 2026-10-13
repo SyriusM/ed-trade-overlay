@@ -274,7 +274,7 @@ class TradeOverlay:
         if current is not None:
             # Werdykt etapu: trasa ze Spansh jest zyskowo najlepsza — o OPTIMAL/RISKY decyduje pewność cen celu
             verdict, shade = assess.assess_route_hop(sell_age)
-            meta.insert(0, f"{assess.ICONS[verdict]} {assess.LABELS[verdict]}")
+            meta.insert(0, assess.badge_for(verdict, shade))
             meta_color = tce.verdict_color(verdict, shade)
         if getattr(route, '_scoopable', False):
             meta.append("⛽")

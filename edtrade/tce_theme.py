@@ -21,11 +21,11 @@ RED = "#ff3b30"
 BLUE = "#5ab4ff"
 
 # Werdykty oceny okazji (edtrade/assess.py): każda klasa ma gradient (start → koniec), shade 0–1 wybiera kolor.
-# OPTIMAL limonka; SAFE zielony → ciemnozielony (VERY SAFE); RISKY czerwony (wysoki zysk) → ciemnoczerwony
-# (okazji pewnie już nie ma); HOLD żółty → bursztynowy.
+# OPTIMAL limonka → oliwka (NOT OPTIMAL); SAFE zielony → ciemnozielony (VERY SAFE); RISKY czerwony (wysoki zysk)
+# → ciemnoczerwony (VERY RISKY: okazji pewnie już nie ma); HOLD żółty → bursztynowy.
 LIME = "#b8ff2e"
 VERDICT_GRADIENTS = {
-    "optimal": (LIME, LIME),
+    "optimal": (LIME, "#8fa82a"),  # limonka → oliwka (NOT OPTIMAL)
     "safe": ("#4cff4c", "#1e9a32"),
     "risky": ("#ff3b30", "#b01a1a"),
     "hold": ("#ffd23f", "#d08a00"),

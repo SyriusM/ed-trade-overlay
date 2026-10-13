@@ -28,7 +28,7 @@ from .trade import (get_system_info, search_stations, find_material_traders, fin
 COMMODITY_MODES = ('Kup', 'Sprzedaj')
 PAGE_HINTS = {
     'Trasa': 'Najlepsza trasa z bieżącej stacji — liczy się sama po dokowaniu, kroki odhaczają się z gry.',
-    'Okolica': '= OPTIMAL · ▲ SAFE (ciemniej = VERY SAFE) · ▼ RISKY (ciemniej = pewnie już nie ma) · ■ HOLD · '
+    'Okolica': '= OPTIMAL · ≠ NOT OPTIMAL · ▲ SAFE · ▲▲ VERY SAFE · ▼ RISKY · ▼▼ VERY RISKY · ■ HOLD · '
                'klik: SWOT · dwuklik: kopiuj system',
     'Porównaj': 'Bieżąca stacja vs cel (jak Trade Overview w TCE). Otwórz z OKOLICY: prawy klik → Porównaj.',
     'Market': 'Pełny rynek jednej stacji. Wypełnia się sam po dokowaniu.',
@@ -168,7 +168,7 @@ class TradePanel:
         self.nearby_modes.pack(fill=tk.X, padx=10, pady=(4, 2))
         self.nearby_header = tce.SectionHeader(self.tab_nearby, 'Kup tutaj → sprzedaj w okolicy', self.fonts)
         self.nearby_header.pack(fill=tk.X, padx=10, pady=(6, 2))
-        trade_columns = [('verdict', 'Ocena', 135, 'w'), ('commodity', 'Towar', 160, 'w'), ('buy', 'Kup', 70, 'e'), ('station', 'Sprzedaj w', 170, 'w'),
+        trade_columns = [('verdict', 'Ocena', 150, 'w'), ('commodity', 'Towar', 160, 'w'), ('buy', 'Kup', 70, 'e'), ('station', 'Sprzedaj w', 170, 'w'),
                          ('system', 'System', 140, 'w'), ('sell', 'Cena', 70, 'e'), ('per_t', 'Zysk/t', 70, 'e'),
                          ('total', 'Zysk', 100, 'e'), ('time', 'Czas', 60, 'e'), ('per_h', 'CR/H', 100, 'e'),
                          ('distance', 'Odl.', 60, 'e'), ('arrival', 'LS', 60, 'e'), ('pad', 'Pad', 40, 'center'),
@@ -184,7 +184,7 @@ class TradePanel:
         self.nearby_cargo_header = tce.SectionHeader(self.tab_nearby, 'Twój ładunek — gdzie sprzedać', self.fonts)
         self.nearby_cargo_header.pack(fill=tk.X, padx=10, pady=(4, 2))
         self.nearby_cargo_table = tce.DataTable(self.tab_nearby, [
-            ('verdict', 'Ocena', 140, 'w'), ('commodity', 'Towar', 160, 'w'), ('units', 'Ilość', 60, 'e'), ('station', 'Sprzedaj w', 170, 'w'),
+            ('verdict', 'Ocena', 150, 'w'), ('commodity', 'Towar', 160, 'w'), ('units', 'Ilość', 60, 'e'), ('station', 'Sprzedaj w', 170, 'w'),
             ('system', 'System', 140, 'w'), ('sell', 'Cena', 70, 'e'), ('total', 'Razem', 100, 'e'),
             ('time', 'Czas', 60, 'e'), ('per_h', 'CR/H', 100, 'e'), ('distance', 'Odl.', 60, 'e'),
             ('arrival', 'LS', 60, 'e'), ('pad', 'Pad', 40, 'center'), ('age', 'Dane', 55, 'e')], height=4)
@@ -1156,10 +1156,12 @@ class TradePanel:
     @staticmethod
     def _trade_sort(t, verdict=None) -> dict:
         # sortowanie po ocenie: OPTIMAL > SAFE > RISKY, w klasie wg stopnia
-        # OPTIMAL > VERY SAFE > SAFE > RISKY (wysoki zysk) > RISKY (pewnie już nie ma)
-        rank = {'optimal': 3, 'safe': 2, 'risky': 1, 'hold': 0}
-        score = (rank[verdict.verdict] + (verdict.shade if verdict.verdict == 'safe' else 1 - verdict.shade) * 0.99) \
-            if verdict is not None else 0
+        # OPTIMAL > VERY SAFE > SAFE > NOT OPTIMAL > RISKY > VERY RISKY
+        score = 0.0
+        if verdict is not None:
+            v, sh = verdict.verdict, verdict.shade
+            score = {'optimal': 5 - sh if not verdict.strong else 2 - sh, 'safe': 3 + sh,
+                     'risky': 1 - sh, 'hold': -1.0}[v]
         return {'verdict': score, 'buy': t.buy_price, 'sell': t.sell_price, 'per_t': t.profit_per_unit, 'total': t.total_profit,
                 'time': t.travel_s, 'per_h': t.profit_per_hour, 'distance': t.distance, 'arrival': t.distance_to_arrival,
                 'units': t.units}

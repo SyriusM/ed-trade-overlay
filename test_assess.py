@@ -50,7 +50,7 @@ def test_partial_hold_is_weakness():
 
 
 def test_colour_gradients():
-    assert tce.verdict_color("optimal", 0.0) == tce.verdict_color("optimal", 1.0) == tce.LIME
+    assert tce.verdict_color("optimal", 0.0) == tce.LIME and tce.verdict_color("optimal", 1.0) == "#8fa82a"
     assert tce.verdict_color("safe", 0.0) == "#4cff4c" and tce.verdict_color("safe", 1.0) == "#1e9a32"
     assert tce.verdict_color("risky", 0.0) == "#ff3b30" and tce.verdict_color("risky", 1.0) == "#b01a1a"
     assert tce.verdict_tag("risky", 0.99) == "v_risky_5" and tce.verdict_tag("safe", 0.0) == "v_safe_0"
@@ -58,7 +58,7 @@ def test_colour_gradients():
 
 def test_very_safe_is_darkest_green():
     a = assess.assess_all([trade(per_t=3000), trade(per_t=500, demand=50000)], assess.value_for_mode("per_hour"))[1]
-    assert a.verdict == assess.SAFE and a.shade == 1.0 and a.badge == "▲ VERY SAFE"
+    assert a.verdict == assess.SAFE and a.shade == 1.0 and a.badge == "▲▲ VERY SAFE"
 
 
 def test_risky_high_profit_brighter_than_stale():
@@ -99,3 +99,15 @@ def test_cargo_hold_on_loss_no_buyer_or_below_mean():
 def test_swot_plus_minus():
     a = assess.assess_all([trade(age=24 * 5)], assess.value_for_mode("per_hour"))[0]
     assert a.swot_text().startswith("▲S: best in list") and "▼T: prices 5 d" in a.swot_text()
+
+
+def test_six_step_scale():
+    v = assess.value_for_mode("per_hour")
+    best = trade()
+    assert assess.assess_all([best], v)[0].badge == "= OPTIMAL"
+    # przeciętny zysk przy umiarkowanym ryzyku (ceny sprzed 2 dni) → NOT OPTIMAL
+    mid = assess.assess_all([best, trade(per_t=1000, age=48)], v)[1]
+    assert mid.badge == "≠ NOT OPTIMAL"
+    assert assess.assess_all([trade(age=24 * 5)], v)[0].badge == "▼ RISKY"
+    assert assess.assess_all([trade(age=24 * 10, demand=256)], v)[0].badge == "▼▼ VERY RISKY"
+    assert assess.badge_for("safe", 0.2) == "▲ SAFE"
