@@ -154,6 +154,11 @@ class JournalWatcher:
         # Początkowe przejście — wczytaj stare linie
         self._find_latest_journal()
         self._load_cargo_json()
+        if self.on_cargo:
+            try:
+                self.on_cargo({"event": "Cargo", "Vessel": "Ship", "Inventory": self._player_cargo})
+            except Exception:
+                logger.exception("Błąd w on_cargo (Cargo.json przy starcie)")
         self._load_market_json()
         events = self._read_new_lines()
         self._dispatch(events)
@@ -193,8 +198,15 @@ class JournalWatcher:
                     except Exception:
                         logger.exception("Błąd w on_loadout")
             elif event_type == "Cargo":
-                cargo_list = ev.get("Cargo", [])
-                logger.debug("Cargo: %d pozycji", len(cargo_list))
+                if ev.get("Vessel", "Ship") != "Ship":
+                    continue  # ładownia SRV
+                # Pełna lista (Inventory) jest w evencie tylko przy starcie gry — zwykle trzeba doczytać Cargo.json
+                if "Inventory" in ev:
+                    self._player_cargo = ev["Inventory"]
+                else:
+                    self._load_cargo_json()
+                    ev = {**ev, "Inventory": self._player_cargo}
+                logger.debug("Cargo: %d pozycji", len(ev["Inventory"]))
                 if self.on_cargo:
                     try:
                         self.on_cargo(ev)

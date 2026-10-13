@@ -223,8 +223,12 @@ class TradeOverlay:
 
         # Cargo awareness — ostrzeżenie jeśli w ładowni jest coś innego niż towar hopu
         if self._player_cargo and display_item and display_qty:
-            other_items = [f"{i['Name']} x{i['Count']}" for i in self._player_cargo
-                           if i.get('Name', '').lower() != display_item.lower() and i.get('Count', 0) > 0]
+            def norm(name: str) -> str:
+                return "".join(ch for ch in name.lower() if ch.isalnum())
+            other_items = [f"{i.get('Name_Localised') or i['Name']} x{i['Count']}" for i in self._player_cargo
+                           if norm(display_item) not in (norm(i.get('Name', '')), norm(i.get('Name_Localised', '')))
+                           and i.get('Count', 0) > 0 and i.get('Name', '').lower() != 'drones'
+                           and not i.get('MissionID')]
             if other_items:
                 extras.append(f"[MASZ: {', '.join(other_items)}]")
 

@@ -14,10 +14,15 @@ from .config import load_user_config, save_user_config
 from . import materials as mats
 from . import tce_theme as tce
 from .checklist import load_commodity_names
+from .filters import filter_from_config
 from datetime import datetime, timezone
-from .trade import get_system_info, search_stations, find_material_traders, find_mining_hotspots, find_mineral_buyers, find_commodity_sellers, get_station_market, StationMarket, JourneyPlan, TradeEngine
+from .trade import (get_system_info, search_stations, find_material_traders, find_mining_hotspots, find_mineral_buyers,
+                    find_commodity_sellers, get_station_market, StationMarket, JourneyPlan, TradeEngine,
+                    nearby_trades_from_market, best_sales_for_cargo)
 
 COMMODITY_MODES = ('Kup', 'Sprzedaj')
+PAD_FILTER_LABELS = {'auto': 'Automatycznie (ze statku)', 'large': 'Tylko pad L', 'all': 'Wszystkie pady'}
+MARKET_TYPE_LABELS = {'all': 'Wszystkie', 'space': 'Tylko kosmiczne', 'planetary': 'Tylko planetarne'}
 PANEL_TITLE = 'ED Trade Panel'
 
 
@@ -77,6 +82,12 @@ class TradePanel:
         self.title_bar = tce.TitleBar(self.window, 'Trasa', self.fonts,
                                       on_control=self._open_settings, on_hide=self.window.iconify)
         self.title_bar.pack(fill=tk.X)
+        self._context_lock = threading.Lock()
+        self._context: dict = {'system': '', 'station': '', 'ship': '', 'capacity': 0, 'jump_range': 0.0,
+                               'ship_large_pad': False, 'cargo': []}
+        self.context_label = tk.Label(self.window, text='', bg=tce.ROW_BG, fg=tce.ORANGE, font=self.fonts.body_bold,
+                                      anchor='w', padx=10, pady=3)
+        self.context_label.pack(fill=tk.X, padx=8, pady=(6, 0))
         self.notebook = ttk.Notebook(self.window, style='TCE.TNotebook')
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=(4, 8))
 
@@ -91,6 +102,38 @@ class TradePanel:
         self.route_status.pack(fill=tk.X, padx=10, pady=(4, 6))
         self.route_cards = tk.Frame(self.tab_route, bg=tce.BG)
         self.route_cards.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+
+        self.tab_nearby = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_nearby, text='Okolica')
+        self.nearby_system_var = tk.StringVar(value='Sol')
+        self.nearby_station_var = tk.StringVar(value='Columbus')
+        self.nearby_range_var = tk.StringVar(value='40')
+        self._cargo_busy = False
+        nearby_entry = ttk.Frame(self.tab_nearby)
+        nearby_entry.pack(fill=tk.X, padx=10, pady=(10, 4))
+        for label, var, width in (('System:', self.nearby_system_var, 18), ('Stacja:', self.nearby_station_var, 22),
+                                  ('Zasięg (ly):', self.nearby_range_var, 6)):
+            ttk.Label(nearby_entry, text=label).pack(side=tk.LEFT)
+            ttk.Entry(nearby_entry, textvariable=var, width=width).pack(side=tk.LEFT, padx=(4, 10))
+        self.nearby_btn = ttk.Button(nearby_entry, text='Szukaj', command=self.refresh_nearby_tab)
+        self.nearby_btn.pack(side=tk.LEFT)
+        self.nearby_header = tce.SectionHeader(self.tab_nearby, 'Kup tutaj → sprzedaj w okolicy', self.fonts)
+        self.nearby_header.pack(fill=tk.X, padx=10, pady=(6, 2))
+        trade_columns = [('commodity', 'Towar', 160, 'w'), ('buy', 'Kup', 70, 'e'), ('station', 'Sprzedaj w', 170, 'w'),
+                         ('system', 'System', 140, 'w'), ('sell', 'Cena', 70, 'e'), ('per_t', 'Zysk/t', 70, 'e'),
+                         ('total', 'Zysk', 100, 'e'), ('time', 'Czas', 60, 'e'), ('per_h', 'CR/H', 100, 'e'),
+                         ('distance', 'Odl.', 60, 'e'), ('arrival', 'LS', 60, 'e'), ('pad', 'Pad', 40, 'center'),
+                         ('age', 'Dane', 55, 'e')]
+        self.nearby_table = tce.DataTable(self.tab_nearby, trade_columns, height=9)
+        self.nearby_table.pack(fill=tk.BOTH, expand=True, padx=10, pady=(2, 6))
+        self.nearby_cargo_header = tce.SectionHeader(self.tab_nearby, 'Twój ładunek — gdzie sprzedać', self.fonts)
+        self.nearby_cargo_header.pack(fill=tk.X, padx=10, pady=(4, 2))
+        self.nearby_cargo_table = tce.DataTable(self.tab_nearby, [
+            ('commodity', 'Towar', 160, 'w'), ('units', 'Ilość', 60, 'e'), ('station', 'Sprzedaj w', 170, 'w'),
+            ('system', 'System', 140, 'w'), ('sell', 'Cena', 70, 'e'), ('total', 'Razem', 100, 'e'),
+            ('time', 'Czas', 60, 'e'), ('per_h', 'CR/H', 100, 'e'), ('distance', 'Odl.', 60, 'e'),
+            ('arrival', 'LS', 60, 'e'), ('pad', 'Pad', 40, 'center'), ('age', 'Dane', 55, 'e')], height=4)
+        self.nearby_cargo_table.pack(fill=tk.X, padx=10, pady=(2, 10))
 
         self.tab_system = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_system, text='System')
@@ -326,13 +369,28 @@ class TradePanel:
         self.bar_only_var = tk.BooleanVar(value=bool(self.user_config.get('bar_only_when_game_focused', False)))
         ttk.Checkbutton(self.settings_frame, text='Pasek tylko gdy gra ma fokus', variable=self.bar_only_var).grid(row=5, column=1, sticky='w', pady=4)
 
+        self.pad_filter_var = tk.StringVar(value=PAD_FILTER_LABELS.get(self.user_config.get('pad_filter', 'auto'),
+                                                                        PAD_FILTER_LABELS['auto']))
+        self.max_star_var = tk.StringVar(value=str(self.user_config.get('max_star_distance_ls', 5000)))
+        self.market_type_var = tk.StringVar(value=MARKET_TYPE_LABELS.get(self.user_config.get('market_type', 'all'),
+                                                                         MARKET_TYPE_LABELS['all']))
+        ttk.Label(self.settings_frame, text='Minimalny pad:').grid(row=6, column=0, sticky='w', padx=(0, 8), pady=4)
+        ttk.Combobox(self.settings_frame, textvariable=self.pad_filter_var, values=list(PAD_FILTER_LABELS.values()),
+                     state='readonly').grid(row=6, column=1, sticky='ew', pady=4)
+        ttk.Label(self.settings_frame, text='Maks. od gwiazdy (ls, 0 = bez limitu):').grid(
+            row=7, column=0, sticky='w', padx=(0, 8), pady=4)
+        ttk.Entry(self.settings_frame, textvariable=self.max_star_var).grid(row=7, column=1, sticky='ew', pady=4)
+        ttk.Label(self.settings_frame, text='Typ rynku:').grid(row=8, column=0, sticky='w', padx=(0, 8), pady=4)
+        ttk.Combobox(self.settings_frame, textvariable=self.market_type_var, values=list(MARKET_TYPE_LABELS.values()),
+                     state='readonly').grid(row=8, column=1, sticky='ew', pady=4)
+
         self.bar_alpha_var = tk.DoubleVar(value=float(self.user_config.get('bar_alpha', 0.75)))
         self.bar_scale_var = tk.DoubleVar(value=float(self.user_config.get('bar_font_scale', 1.0)))
         self.panel_scale_var = tk.DoubleVar(value=float(self.user_config.get('panel_font_scale', 1.0)))
         for row, (title, var, lo, hi) in enumerate((
                 ('Przezroczystość paska:', self.bar_alpha_var, 0.3, 1.0),
                 ('Czcionka paska (skala):', self.bar_scale_var, 0.7, 1.8),
-                ('Czcionka panelu (skala):', self.panel_scale_var, 0.7, 1.8)), start=6):
+                ('Czcionka panelu (skala):', self.panel_scale_var, 0.7, 1.8)), start=9):
             ttk.Label(self.settings_frame, text=title).grid(row=row, column=0, sticky='w', padx=(0, 8), pady=4)
             line = ttk.Frame(self.settings_frame)
             line.grid(row=row, column=1, sticky='ew', pady=4)
@@ -343,12 +401,13 @@ class TradePanel:
                 side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
 
         self.save_settings_btn = ttk.Button(self.settings_frame, text='Zapisz', command=self.save_settings)
-        self.save_settings_btn.grid(row=9, column=1, sticky='w', pady=(10, 4))
+        self.save_settings_btn.grid(row=12, column=1, sticky='w', pady=(10, 4))
 
         self.settings_status_var = tk.StringVar(value='')
-        ttk.Label(self.settings_frame, textvariable=self.settings_status_var).grid(row=10, column=1, sticky='w', pady=4)
+        ttk.Label(self.settings_frame, textvariable=self.settings_status_var).grid(row=13, column=1, sticky='w', pady=4)
 
         tce.uppercase_static_texts(self.window)
+        self._render_context()
         self.nav = tce.NavBar(self.window, self.notebook, self.fonts, on_change=self.title_bar.set_title)
         self.nav.pack(fill=tk.X, padx=8, pady=(6, 0), before=self.notebook)
 
@@ -360,6 +419,39 @@ class TradePanel:
             tce.set_table_row_height(self.window, self.fonts)
         elif self.on_appearance_change is not None:
             self.on_appearance_change(self.bar_alpha_var.get(), self.bar_scale_var.get())
+
+    def context(self) -> dict:
+        with self._context_lock:
+            return dict(self._context)
+
+    def update_context(self, **values) -> None:
+        """Wolane z watku watchera: pozycja, statek, ladunek. Wszystkie strony licza wzgledem tego kontekstu."""
+        with self._context_lock:
+            self._context.update(values)
+        try:
+            self.window.after(0, self._context_changed, set(values))
+        except Exception:
+            pass
+
+    def _context_changed(self, keys: set) -> None:
+        self._render_context()
+        if 'cargo' in keys and hasattr(self, 'nearby_cargo_table'):
+            self.refresh_cargo_sales()
+
+    def _market_filter(self):
+        return filter_from_config(self.user_config, self.context()['ship_large_pad'])
+
+    def _render_context(self) -> None:
+        ctx = self.context()
+        where = f"{ctx['system']} · {ctx['station']}" if ctx['station'] else (ctx['system'] or 'nieznana (czekam na journal)')
+        ship = ctx['ship'] or 'nieznany'
+        if ctx['capacity']:
+            ship += f" · {ctx['capacity']:.0f} t"
+        if ctx['jump_range']:
+            ship += f" · {ctx['jump_range']:.1f} ly"
+        cargo = sum(int(c.get('Count') or 0) for c in ctx['cargo'])
+        self.context_label.config(text=f'POZYCJA: {where}    STATEK: {ship}    ŁADUNEK: {cargo} t    '
+                                       f'FILTR: {self._market_filter().describe()}'.upper())
 
     def _open_settings(self) -> None:
         self.nav.select_frame(self.tab_settings)
@@ -407,12 +499,15 @@ class TradePanel:
             return
         self.materials_btn.config(state=tk.DISABLED)
         self.materials_header.set(f'Trader {kind} wokół {system_name} — szukam...', '')
-        threading.Thread(target=self._materials_worker, args=(system_name, kind), daemon=True).start()
+        threading.Thread(target=self._materials_worker, args=(system_name, kind, self._market_filter()),
+                         daemon=True).start()
 
-    def _materials_worker(self, system_name: str, kind: str) -> None:
-        """Watek roboczy: NIE dotyka widgetow Tk — oddaje handlarzy przez after(0)."""
+    def _materials_worker(self, system_name: str, kind: str, market_filter) -> None:
+        """Watek roboczy: NIE dotyka widgetow Tk — oddaje handlarzy (po filtrze padu/ls) przez after(0)."""
         try:
-            traders, error = find_material_traders(system_name, kind, max_ly=50, size=25), ''
+            traders = find_material_traders(system_name, kind, max_ly=50, size=50)
+            traders, error = [t for t in traders if market_filter.accepts(
+                'large' if t.large_pads else ('medium' if t.medium_pads else 'small'), t.distance_to_arrival)], ''
         except Exception as e:
             traders, error = [], str(e)
         try:
@@ -444,9 +539,10 @@ class TradePanel:
             return
         self.mining_btn.config(state=tk.DISABLED)
         self.mining_header.set(f'{mineral} wokół {system_name} — szukam...', '')
-        threading.Thread(target=self._mining_worker, args=(system_name, mineral), daemon=True).start()
+        threading.Thread(target=self._mining_worker, args=(system_name, mineral, self._market_filter()),
+                         daemon=True).start()
 
-    def _mining_worker(self, system_name: str, mineral: str) -> None:
+    def _mining_worker(self, system_name: str, mineral: str, market_filter) -> None:
         """Watek roboczy: NIE dotyka widgetow Tk — hotspoty i kupcy w jednym watku, wynik przez after(0)."""
         errors = []
         try:
@@ -455,7 +551,8 @@ class TradePanel:
             hotspots = []
             errors.append(f'hotspoty: {e}')
         try:
-            buyers = find_mineral_buyers(mineral, system_name, max_ly=60, size=20)
+            buyers = [b for b in find_mineral_buyers(mineral, system_name, max_ly=60, size=100)
+                      if market_filter.accepts(b.pad_size, b.distance_to_arrival, b.station_type)][:20]
         except Exception as e:
             buyers = []
             errors.append(f'kupcy: {e}')
@@ -488,30 +585,35 @@ class TradePanel:
             return
         self.commodity_btn.config(state=tk.DISABLED)
         self.commodity_header.set(f'{commodity} — szukam wokół {system_name}...', '')
-        threading.Thread(target=self._commodity_worker, args=(system_name, commodity, mode), daemon=True).start()
+        threading.Thread(target=self._commodity_worker, args=(system_name, commodity, mode, self._market_filter()),
+                         daemon=True).start()
 
-    def _commodity_worker(self, system_name: str, commodity: str, mode: str) -> None:
-        """Watek roboczy: NIE dotyka widgetow Tk — pobiera dane i oddaje wiersze przez after(0)."""
+    def _commodity_worker(self, system_name: str, commodity: str, mode: str, market_filter) -> None:
+        """Watek roboczy: NIE dotyka widgetow Tk — pobiera dane, filtruje (pad/ls/typ) i oddaje wiersze przez after(0)."""
         rows, error = [], ''
         try:
             if mode == 'Sprzedaj':
+                found = [b for b in find_mineral_buyers(commodity, system_name, max_ly=60, size=100)
+                         if market_filter.accepts(b.pad_size, b.distance_to_arrival, b.station_type)][:25]
                 rows = [(b.station_name, b.system_name, f'{b.sell_price:,} cr', f'{b.demand:,}', f'{b.distance:.1f} ly',
                          b.pad_size or '?', _data_age(b.updated_at),
-                         {'price': b.sell_price, 'volume': b.demand, 'distance': b.distance})
-                        for b in find_mineral_buyers(commodity, system_name, max_ly=60, size=25)]
+                         {'price': b.sell_price, 'volume': b.demand, 'distance': b.distance}) for b in found]
             else:
-                rows = [(s.station_name, s.system_name, f'{s.buy_price:,} cr', f'{s.stock:,}', f'{s.distance:.1f} ly',
-                         s.pad_size or '?', _data_age(s.updated_at),
-                         {'price': s.buy_price, 'volume': s.stock, 'distance': s.distance})
-                        for s in find_commodity_sellers(commodity, system_name, max_ly=60, size=25)]
+                found = [x for x in find_commodity_sellers(commodity, system_name, max_ly=60, size=100)
+                         if market_filter.accepts(x.pad_size, x.distance_to_arrival, x.station_type)][:25]
+                rows = [(x.station_name, x.system_name, f'{x.buy_price:,} cr', f'{x.stock:,}', f'{x.distance:.1f} ly',
+                         x.pad_size or '?', _data_age(x.updated_at),
+                         {'price': x.buy_price, 'volume': x.stock, 'distance': x.distance}) for x in found]
         except Exception as e:
             error = str(e)
         try:
-            self.window.after(0, self._commodity_done, commodity, system_name, mode, rows, error)
+            self.window.after(0, self._commodity_done, commodity, system_name, mode, rows, error,
+                              market_filter.describe())
         except Exception:
             pass
 
-    def _commodity_done(self, commodity: str, system_name: str, mode: str, rows: list, error: str) -> None:
+    def _commodity_done(self, commodity: str, system_name: str, mode: str, rows: list, error: str,
+                        filter_text: str = '') -> None:
         """Wywolywane w watku Tk: pokaz wynik i odblokuj przycisk."""
         self.commodity_table.set_rows([r[:-1] for r in rows], sort_values=[r[-1] for r in rows])
         what = 'kupić' if mode == 'Kup' else 'sprzedać'
@@ -519,9 +621,10 @@ class TradePanel:
             self.commodity_header.set(f'Błąd: {error}', '')
         elif rows:
             order = 'najtaniej najpierw' if mode == 'Kup' else 'najdrożej najpierw'
-            self.commodity_header.set(f'Gdzie {what}: {commodity} (wokół {system_name})', f'{len(rows)} stacji, {order}')
+            self.commodity_header.set(f'Gdzie {what}: {commodity} (wokół {system_name})',
+                                      f'{len(rows)} stacji, {order} · {filter_text}')
         else:
-            self.commodity_header.set(f'Brak stacji, gdzie {what} {commodity} (albo nieznana nazwa)', '')
+            self.commodity_header.set(f'Brak stacji, gdzie {what} {commodity} (albo nieznana nazwa)', filter_text)
         self.commodity_btn.config(state=tk.NORMAL)
 
     def show_route(self, route) -> None:
@@ -589,6 +692,119 @@ class TradePanel:
         tk.Label(side, text=f'+{profit:,} CR', bg=bg, fg=tce.GREEN if not done else fg,
                  font=f.big, anchor='e').pack(anchor='e')
 
+    def _jump_range(self) -> float:
+        return float(self.context()['jump_range'] or 30.0)
+
+    @staticmethod
+    def _trade_row(t, names: dict, with_buy: bool) -> tuple:
+        name = names.get(t.commodity.lower(), t.commodity)
+        minutes = f'{int(t.travel_s // 60)}:{int(t.travel_s % 60):02d}'
+        common = (t.sell_station, t.sell_system, f'{t.sell_price:,}')
+        tail = (minutes, f'{t.profit_per_hour / 1e6:.1f} M', f'{t.distance:.1f}', f'{t.distance_to_arrival:,.0f}',
+                (t.pad_size or '?')[0].upper(), _data_age(t.updated_at))
+        if with_buy:
+            return (name, f'{t.buy_price:,}') + common + (f'{t.profit_per_unit:,}', f'{t.total_profit:,}') + tail
+        return (name, t.units) + common + (f'{t.total_profit:,}',) + tail
+
+    @staticmethod
+    def _trade_sort(t) -> dict:
+        return {'buy': t.buy_price, 'sell': t.sell_price, 'per_t': t.profit_per_unit, 'total': t.total_profit,
+                'time': t.travel_s, 'per_h': t.profit_per_hour, 'distance': t.distance, 'arrival': t.distance_to_arrival,
+                'units': t.units}
+
+    def refresh_nearby_tab(self) -> None:
+        """Kup tutaj → sprzedaj w okolicy (wzgledem stacji, ladowni i zasiegu statku), plus sprzedaz ladunku."""
+        system_name = self.nearby_system_var.get().strip()
+        station_name = self.nearby_station_var.get().strip()
+        try:
+            max_ly = float(self.nearby_range_var.get().strip())
+        except ValueError:
+            self.nearby_header.set('Błąd: zasięg musi być liczbą', '')
+            return
+        if not system_name or not station_name or str(self.nearby_btn['state']) == tk.DISABLED:
+            return
+        capacity = int(self.context()['capacity'] or 0)
+        self.nearby_btn.config(state=tk.DISABLED)
+        self.nearby_header.set(f'{station_name} ({system_name}) — liczę okazje w {max_ly:.0f} ly...', '')
+        threading.Thread(target=self._nearby_worker, daemon=True,
+                         args=(system_name, station_name, max_ly, capacity, self._market_filter(), self._jump_range())).start()
+        self.refresh_cargo_sales()
+
+    def _nearby_worker(self, system_name: str, station_name: str, max_ly: float, capacity: int, market_filter,
+                       jump_range: float) -> None:
+        trades, error, names = [], '', {}
+        try:
+            market = get_station_market(system_name, station_name)
+            if market.error:
+                error = market.error
+            else:
+                trades = nearby_trades_from_market(market, capacity or 304, market_filter, max_ly, jump_range=jump_range)
+            names = load_commodity_names()
+        except Exception as e:
+            error = str(e)
+        try:
+            self.window.after(0, self._nearby_done, system_name, station_name, capacity, trades, names, error,
+                              market_filter.describe())
+        except Exception:
+            pass
+
+    def _nearby_done(self, system_name: str, station_name: str, capacity: int, trades: list, names: dict, error: str,
+                     filter_text: str) -> None:
+        self.nearby_table.set_rows([self._trade_row(t, names, True) for t in trades],
+                                   sort_values=[self._trade_sort(t) for t in trades])
+        hold = f'ładownia {capacity} t' if capacity else 'ładownia 304 t (domyślnie — czekam na Loadout)'
+        if error:
+            self.nearby_header.set(f'{station_name} ({system_name}) — błąd: {error}', '')
+        elif trades:
+            self.nearby_header.set(f'Kup w {station_name} → sprzedaj w okolicy',
+                                   f'{len(trades)} okazji · najlepsze cr/h · {hold} · {filter_text}')
+        else:
+            self.nearby_header.set(f'{station_name}: brak zyskownych okazji w zasięgu', f'{hold} · {filter_text}')
+        self.nearby_btn.config(state=tk.NORMAL)
+
+    def refresh_cargo_sales(self) -> None:
+        """Gdzie sprzedac to, co jest w ladowni (z journala) — wzgledem biezacego systemu."""
+        ctx = self.context()
+        cargo = [c for c in ctx['cargo'] if int(c.get('Count') or 0) > 0 and c.get('Name', '').lower() != 'drones'
+                 and not c.get('MissionID')]
+        reference = ctx['system'] or self.nearby_system_var.get().strip()
+        if not cargo:
+            self.nearby_cargo_table.set_rows([])
+            self.nearby_cargo_header.set('Twój ładunek — gdzie sprzedać', 'ładownia pusta')
+            return
+        if self._cargo_busy or not reference:
+            return
+        self._cargo_busy = True
+        self.nearby_cargo_header.set('Twój ładunek — gdzie sprzedać', f'liczę wokół {reference}...')
+        try:
+            max_ly = float(self.nearby_range_var.get().strip())
+        except ValueError:
+            max_ly = 40.0
+        threading.Thread(target=self._cargo_worker, daemon=True,
+                         args=(cargo, reference, max_ly, self._market_filter(), self._jump_range())).start()
+
+    def _cargo_worker(self, cargo: list, reference: str, max_ly: float, market_filter, jump_range: float) -> None:
+        trades, error, names = [], '', {}
+        try:
+            trades = best_sales_for_cargo(cargo, reference, market_filter, max_ly, jump_range=jump_range)
+            names = load_commodity_names()
+        except Exception as e:
+            error = str(e)
+        try:
+            self.window.after(0, self._cargo_done, reference, cargo, trades, names, error)
+        except Exception:
+            pass
+
+    def _cargo_done(self, reference: str, cargo: list, trades: list, names: dict, error: str) -> None:
+        self._cargo_busy = False
+        self.nearby_cargo_table.set_rows([self._trade_row(t, names, False) for t in trades],
+                                         sort_values=[self._trade_sort(t) for t in trades])
+        total = sum(t.total_profit for t in trades)
+        unsold = len(cargo) - len(trades)
+        right = f'razem {total:,} cr' + (f' · {unsold} bez kupca w zasięgu' if unsold else '')
+        self.nearby_cargo_header.set(f'Twój ładunek — gdzie sprzedać (wokół {reference})',
+                                     f'błąd: {error}' if error else right)
+
     def show_docked_station(self, system_name: str, station_name: str) -> None:
         """Wolane z watku watchera po Docked: przekaz do watku Tk przez after(0)."""
         self.window.after(0, self._show_docked_station_inner, system_name, station_name)
@@ -596,11 +812,13 @@ class TradePanel:
     def _show_docked_station_inner(self, system_name: str, station_name: str) -> None:
         """Wpisz biezacy system/stacje w zakladki i odswiez Market (inne zakladki tylko wypelnione, bez sieci)."""
         for var in (self.system_entry_var, self.materials_system_var, self.mining_system_var,
-                    self.commodity_system_var, self.market_system_var):
+                    self.commodity_system_var, self.market_system_var, self.nearby_system_var):
             var.set(system_name)
         self.market_station_var.set(station_name)
+        self.nearby_station_var.set(station_name)
         if str(self.market_btn['state']) != tk.DISABLED:
             self.refresh_market_tab()
+        self.refresh_nearby_tab()
 
     def set_materials(self, event: dict) -> None:
         """Wolane z watku watchera (event Materials). Stan pod lockiem — przezyje nawet nieudane after()."""
@@ -777,6 +995,15 @@ class TradePanel:
         except ValueError:
             self.settings_status_var.set('Błąd: zasięg musi być liczbą.')
             return
+        try:
+            max_star = float(self.max_star_var.get().strip().replace(',', '.'))
+            if max_star < 0:
+                raise ValueError
+        except ValueError:
+            self.settings_status_var.set('Błąd: odległość od gwiazdy musi być liczbą ≥ 0.')
+            return
+        pad_filter = next((k for k, v in PAD_FILTER_LABELS.items() if v == self.pad_filter_var.get()), 'auto')
+        market_type = next((k for k, v in MARKET_TYPE_LABELS.items() if v == self.market_type_var.get()), 'all')
 
         # Aktualizuj config in-place
         self.user_config.update({
@@ -789,12 +1016,16 @@ class TradePanel:
             'bar_alpha': round(self.bar_alpha_var.get(), 2),
             'bar_font_scale': round(self.bar_scale_var.get(), 2),
             'panel_font_scale': round(self.panel_scale_var.get(), 2),
+            'pad_filter': pad_filter,
+            'max_star_distance_ls': max_star,
+            'market_type': market_type,
         })
 
         # Zapisz do pliku
         try:
             save_user_config(self.user_config, self.config_path)
             self.settings_status_var.set('Zapisano.')
+            self._render_context()
         except Exception as e:
             self.settings_status_var.set(f'Błąd zapisu: {e}')
 

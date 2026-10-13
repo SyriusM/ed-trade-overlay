@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from .watcher import JournalWatcher
+from .filters import filter_from_config
 from .trade import (TradeEngine, ship_needs_large_pad, get_system_info, search_stations, find_material_traders,
                     find_mining_hotspots, find_mineral_buyers)
 from .overlay import TradeOverlay
@@ -150,6 +151,7 @@ class EDTradeOverlayApp:
         self.checklist: Optional[RouteChecklist] = None
         self._commodity_names: dict[str, str] = {}
         self._cargo: list[dict] = []
+        self._ship_large_pad = False
 
         # Podłącz callback pollingu do overlaya
         if self.overlay:
@@ -174,10 +176,14 @@ class EDTradeOverlayApp:
             self.trade_engine.capacity = capacity
         if max_jump_range > 0:
             self.trade_engine.ly_per = max_jump_range
-        large_pad = ship_needs_large_pad(ship)
-        pad_changed = large_pad != self.trade_engine.requires_large_pad
-        self.trade_engine.requires_large_pad = large_pad
-        logger.info("Loadout: %s — trasy tylko przez stacje z padem L: %s", ship, large_pad)
+        self._ship_large_pad = ship_needs_large_pad(ship)
+        was_large = self.trade_engine.requires_large_pad
+        self._apply_market_filter()
+        pad_changed = was_large != self.trade_engine.requires_large_pad
+        logger.info("Loadout: %s — trasy tylko przez stacje z padem L: %s", ship, self.trade_engine.requires_large_pad)
+        if self.panel is not None:
+            self.panel.update_context(ship=ship, capacity=capacity, jump_range=max_jump_range,
+                                      ship_large_pad=self._ship_large_pad)
 
         # Przelicz, gdy zmieniła się pojemność albo wymagany pad (zmiana statku)
         if capacity <= 0 or (capacity == self._last_capacity and not pad_changed):
@@ -206,11 +212,19 @@ class EDTradeOverlayApp:
 
     def _on_cargo(self, event: dict):
         """Reaguje na event Cargo — przesyła listę towarów do overlaya."""
-        self._cargo = event.get("Cargo", [])
+        self._cargo = event.get("Inventory") or []
         if self.overlay:
-            cargo_list = self._cargo
-            self.overlay.set_player_cargo(cargo_list)
-            logger.debug("Cargo event: %d pozycji", len(cargo_list))
+            self.overlay.set_player_cargo(self._cargo)
+        if self.panel is not None:
+            self.panel.update_context(cargo=self._cargo)
+        logger.debug("Cargo: %d pozycji", len(self._cargo))
+
+    def _apply_market_filter(self):
+        """Filtry z configu (Ustawienia mogą je zmienić w trakcie) + rozmiar statku → parametry trasy."""
+        market_filter = filter_from_config(self.user_config, self._ship_large_pad)
+        self.trade_engine.requires_large_pad = market_filter.requires_large_pad
+        self.trade_engine.max_star_ls = market_filter.max_star_ls
+        return market_filter
 
     def _publish_route(self, route, system: str, station: str) -> None:
         """Nowa trasa → nowa checklista (kup → leć → sprzedaj) i wysłanie do overlaya."""
@@ -260,6 +274,8 @@ class EDTradeOverlayApp:
 
         self._feed_checklist(event)
         following = self.checklist is not None and self.checklist.follows_plan(system, station)
+        if self.panel is not None:
+            self.panel.update_context(system=system, station=station)
 
         # Unikaj redundancyjnych wyliczeń — ten sam system/stacja
         key = f"{system}/{station}"
@@ -282,6 +298,7 @@ class EDTradeOverlayApp:
         if following:
             logger.info("Docked w celu hopu %d — trasa w toku, bez przeliczania", self.checklist.hop_index + 1)
         else:
+            self._apply_market_filter()
             route = self.trade_engine.calculate_route_via_spansh(system, station)
 
         # Pobierz info o systemie i stacjach
