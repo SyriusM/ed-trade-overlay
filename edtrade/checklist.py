@@ -177,13 +177,21 @@ class RouteChecklist:
         return False
 
     def on_cargo(self, inventory: list[dict]) -> bool:
-        """Cargo.json po transakcji: towaru hopu już nie ma w ładowni, a coś sprzedano → hop zakończony.
+        """Cargo.json: przed sprzedażą — ile towaru hopu jest na pokładzie (zakup "kup" ✓ nawet bez MarketBuy);
+        po sprzedaży — towaru hopu już nie ma w ładowni → hop zakończony.
 
         Zabezpiecza przed zawieszeniem, gdy licznik "kupione" się rozjechał (np. zakup policzony raz z ładowni
         przy tworzeniu trasy i drugi raz z MarketBuy w tej samej sekundzie)."""
-        if self.finished or not self.sold:
+        if self.finished:
             return False
         held = sum(int(c.get("Count") or 0) for c in inventory if self._matches(c.get("Name", "")))
+        if not self.sold:
+            # Ładownia to prawda o zakupie: MarketBuy mógł przyjść przed utworzeniem trasy albo się zgubić
+            if held > self.bought:
+                self.bought = held
+                self._sync_route()
+                return True
+            return False
         if held:
             return False
         self._advance()

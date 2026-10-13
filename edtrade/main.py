@@ -12,6 +12,7 @@ import logging
 import signal
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
 from pathlib import Path
 
@@ -183,15 +184,15 @@ class EDTradeOverlayApp:
         )
         self.watcher = JournalWatcher(
             journal_dir=args.journal_dir,
-            on_docked=self._on_docked,
-            on_loadout=self._on_loadout,
+            on_docked=self._on_docked_event,
+            on_loadout=lambda ev: self._planner(self._on_loadout, ev),
             on_cargo=self._on_cargo,
-            on_market=self._on_market,
+            on_market=self._on_market_event,
             on_materials=self._on_materials,
             on_trade=self._on_trade,
             on_session=self._on_session,
             on_location=self._on_location,
-            on_caught_up=self._on_caught_up,
+            on_caught_up=lambda: self._planner(self._on_caught_up),
         )
         self._dock_count = 0
         self._last_system = ""
@@ -224,6 +225,9 @@ class EDTradeOverlayApp:
         self._replanned_for = None
         self._flight_system = ""  # system po ostatnim skoku (w locie); "" = zadokowany / nieznane
         self._caught_up = False
+        # Wątek planisty: sieć (Spansh, Ardent) poza wątkiem journala — zakup/sprzedaż/dokowanie odhaczają się
+        # od razu, nawet gdy trasa liczy się kilka minut. Jeden wątek = zachowana kolejność zdarzeń.
+        self._planner_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="planner")
         self._pending_dock: Optional[dict] = None  # ostatnie dokowanie z historii journala (przed _on_caught_up)
         self._dock_generation = 0
         self._full_route_generation = 0
@@ -353,8 +357,8 @@ class EDTradeOverlayApp:
         """Reaguje na event Cargo — przesyła listę towarów do overlaya."""
         self._cargo = event.get("Inventory") or []
         if self.checklist is not None and self.checklist.on_cargo(self._cargo):
-            logger.info("Checklista: towaru hopu nie ma już w ładowni — hop %d/%d", self.checklist.hop_index + 1,
-                        len(self.checklist.hops))
+            logger.info("Checklista wg ładowni: hop %d/%d %s", self.checklist.hop_index + 1,
+                        len(self.checklist.hops), self.checklist.status_text())
             if self.overlay:
                 self.overlay._refresh_now()
             if self.panel is not None:
@@ -428,6 +432,11 @@ class EDTradeOverlayApp:
 
     def _publish_route(self, route, system: str, station: str) -> None:
         """Nowa trasa → nowa checklista (kup → leć → sprzedaj) i wysłanie do overlaya."""
+        if self.checklist is not None and self.checklist.carrying() and route is not self.checklist.route:
+            # Gracz wiezie już towar bieżącego hopu — żadna spóźniona trasa (Spansh, szybka) go nie nadpisuje
+            logger.info("Nowa trasa pominięta — towar bieżącego hopu już na pokładzie (%s)",
+                        self.checklist.status_text())
+            return
         self.checklist = None
         if trade_module.PRICE_DB is not None and not route.error and route.hops_list:
             if not self._commodity_names:
@@ -618,6 +627,34 @@ class EDTradeOverlayApp:
         elif self._pending_dock is not None:
             self._on_docked(self._pending_dock)  # stoisz w stacji — trasa od niej
         self._pending_dock = None
+
+    def _planner(self, fn, *args) -> None:
+        def run():
+            try:
+                fn(*args)
+            except Exception:
+                logger.exception("Błąd w wątku planisty (%s)", getattr(fn, "__name__", fn))
+        self._planner_pool.submit(run)
+
+    def _on_docked_event(self, event: dict) -> None:
+        """Watcher: szybka część dokowania od razu (checklista, pozycja), liczenie trasy w wątku planisty."""
+        if not self._caught_up:
+            self._on_docked(event)  # historia journala — tylko stan, szybko i w kolejności
+            return
+        self.session.on_event(event)
+        system, station = event.get("StarSystem", ""), event.get("StationName", "")
+        if system and station:
+            self._flight_system = ""
+            self._feed_checklist(event)
+            if self.panel is not None:
+                self.panel.update_context(system=system, station=station)
+        self._planner(self._on_docked, event)  # powtórzenie szybkiej części jest bezpieczne (idempotentne)
+
+    def _on_market_event(self, event: dict) -> None:
+        if not self._caught_up:
+            self._on_market(event)
+        else:
+            self._planner(self._on_market, event)
 
     def _on_docked(self, event: dict):
         """Reaguje na event Docked — wylicza najlepszą trasę."""
@@ -831,8 +868,11 @@ class EDTradeOverlayApp:
         before = hop.cargo_text()
         dest = get_station_market(hop.destination_system, hop.destination_station)
         self._sync_credits()
+        held = sum(int(c.get("Count") or 0) for c in self._trade_cargo()
+                   if checklist._matches(c.get("Name", "")))  # towar hopu już na pokładzie mieści się "w hopie"
         changed = apply_live_market(route, index, data.get("Items", []), dest.imports,
-                                    int(self.trade_engine.capacity), self.trade_engine.capital, self._commodity_names)
+                                    int(self._free_capacity()) + held, self.trade_engine.capital,
+                                    self._commodity_names)
         if not hop.commodities and not (hop.commodity and hop.amount):
             route.error = ""  # zamiast błędu trasy: komunikat ✗ i nowa trasa z rynku na żywo
             return verify.LiveCheck(verify.GONE, "✗ TOWARÓW Z TRASY JUŻ NIE MA", verify.BUY, index)
