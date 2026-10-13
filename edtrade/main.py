@@ -190,6 +190,8 @@ class EDTradeOverlayApp:
             on_materials=self._on_materials,
             on_trade=self._on_trade,
             on_session=self._on_session,
+            on_location=self._on_location,
+            on_caught_up=self._on_caught_up,
         )
         self._dock_count = 0
         self._last_system = ""
@@ -217,8 +219,12 @@ class EDTradeOverlayApp:
         if self.panel is not None:
             self.panel.show_pilot(self.pilot.describe())
         self._copied_system = ""
+        self._manual_copy_at = 0.0
         self._live_market = None
         self._replanned_for = None
+        self._flight_system = ""  # system po ostatnim skoku (w locie); "" = zadokowany / nieznane
+        self._caught_up = False
+        self._pending_dock: Optional[dict] = None  # ostatnie dokowanie z historii journala (przed _on_caught_up)
         self._dock_generation = 0
         self._full_route_generation = 0
         self._quick_route_of = None  # (generation, TradeRoute) — szybka trasa z ostatniego dokowania
@@ -226,6 +232,8 @@ class EDTradeOverlayApp:
         self._refresh_lock = threading.Lock()
         if self.panel is not None:
             self.panel.on_refresh = self.refresh
+            self.panel.on_copy_target = lambda mode_change=False: self.copy_current_target(
+                alternate=not mode_change)
         self._destination_key: Optional[tuple] = None
         self.hotkeys: Optional[HotkeyManager] = None
         if self.overlay is not None:
@@ -252,7 +260,8 @@ class EDTradeOverlayApp:
         return top, bottom
 
     def _hotkey_actions(self) -> dict:
-        actions = {'top_bar': lambda _slot: self.overlay.slider.toggle_user()}
+        actions = {'top_bar': lambda _slot: self.overlay.slider.toggle_user(),
+                   'copy_target': lambda _slot: self.copy_current_target(alternate=True)}
         if self.bottom_bar is not None:
             actions['bottom_bar'] = lambda _slot: self.bottom_bar.slider.toggle_user()
         if self.panel is not None:
@@ -329,7 +338,9 @@ class EDTradeOverlayApp:
             self._last_capacity, capacity, key,
         )
         self._sync_credits()
-        route = self.trade_engine.calculate_route_via_spansh(system, station)
+        route = self.trade_engine.calculate_route_via_spansh(
+            system, station, capacity_override=self._free_capacity(),
+            max_hops=max(1, min(10, int(self.user_config.get('max_hops', 3)))))
 
         if route.error:
             logger.error("Błąd przeliczenia trasy po Loadout: %s", route.error)
@@ -494,6 +505,24 @@ class EDTradeOverlayApp:
         self._copied_system = target
         self.overlay.master.after(0, self._copy_now, target)
 
+    def copy_current_target(self, alternate: bool = False) -> None:
+        """Ręcznie: cel bieżącego hopu do schowka wg Ustawień. alternate=True i drugie naciśnięcie w ciągu
+        5 s → druga postać (stacja ↔ system) — gdy mapa nie znajduje stacji w nieznanym systemie."""
+        route = self.checklist.route if self.checklist is not None else None
+        system, station = self._current_target(route)
+        if not system:
+            return
+        mode = self.user_config.get('copy_target', 'station')
+        recent = time.time() - self._manual_copy_at < 5
+        if alternate and recent and self._copied_system in (station, system, copy_text(system, station, 'both')):
+            target = system if self._copied_system != system else (station or system)
+        else:
+            target = copy_text(system, station, mode)
+        self._manual_copy_at = time.time() if alternate else 0.0
+        self._copied_system = target
+        if self.overlay is not None:
+            self.overlay.master.after(0, self._copy_now, target)
+
     def _copy_now(self, target: str) -> None:
         if self.panel is not None:
             self.panel.copy_system(target)  # + komunikat w panelu (system albo stacja)
@@ -547,6 +576,41 @@ class EDTradeOverlayApp:
             self._last_system = ""
             self._on_docked({"StarSystem": system, "StationName": station})
 
+    def _on_location(self, event: dict):
+        """FSDJump / Location w locie: pozycja na pasku i w panelu; z cudzym towarem w ładowni — od razu,
+        gdzie go sprzedać z TEGO systemu (bez czekania na dokowanie)."""
+        system = event.get("StarSystem", "")
+        if not system:
+            return
+        if event.get("Docked"):
+            self._flight_system = ""
+            return  # dokowanie obsługuje _on_docked
+        self._pending_dock = None  # odlot — dawne dokowanie już nieaktualne
+        self._flight_system = system
+        self._last_system = ""  # ponowne dokowanie w tej samej stacji ma znów przeliczyć
+        if self.panel is not None:
+            self.panel.update_context(system=system, station="")
+        if self.overlay:
+            self.overlay.set_system_info(f"{system} · w locie")
+        if self._caught_up:  # historia journala przy starcie — tylko pozycja, bez zapytań sieciowych
+            self._plan_in_flight()
+
+    def _plan_in_flight(self) -> None:
+        system = self._flight_system
+        if not system or (self.checklist is not None and self.checklist.carrying()) or not self._trade_cargo():
+            return
+        threading.Thread(target=self._sell_cargo_first, args=(system, ""), daemon=True).start()
+
+    def _on_caught_up(self) -> None:
+        """Start w locie (np. po aktualizacji programu): stan z journala znany — zaplanuj sprzedaż ładunku."""
+        self._caught_up = True
+        logger.info("Journal wczytany%s", f" — w locie w {self._flight_system}" if self._flight_system else "")
+        if self._flight_system:
+            self._plan_in_flight()
+        elif self._pending_dock is not None:
+            self._on_docked(self._pending_dock)  # stoisz w stacji — trasa od niej
+        self._pending_dock = None
+
     def _on_docked(self, event: dict):
         """Reaguje na event Docked — wylicza najlepszą trasę."""
         self.session.on_event(event)  # stacja dla kolejnych transakcji w podsumowaniu
@@ -559,12 +623,19 @@ class EDTradeOverlayApp:
         if event.get("SystemAddress"):
             self._last_docked_event = event
 
+        self._flight_system = ""
         self._feed_checklist(event)
         # Trasy nie przeliczamy, gdy gracz ją realizuje: dokuje w celu hopu ALBO wiezie towar hopu (postój po drodze)
         following = self.checklist is not None and (self.checklist.follows_plan(system, station)
                                                      or self.checklist.carrying())
         if self.panel is not None:
             self.panel.update_context(system=system, station=station)
+
+        if not self._caught_up:
+            # Historia journala przy starcie: tylko stan (bez Spansh dla każdej dawnej stacji) — trasę liczy
+            # _on_caught_up raz, od miejsca, w którym gracz jest TERAZ
+            self._pending_dock = event
+            return
 
         # Unikaj redundancyjnych wyliczeń — ten sam system/stacja
         key = f"{system}/{station}"
@@ -611,7 +682,9 @@ class EDTradeOverlayApp:
             self._dock_generation += 1
             generation = self._dock_generation
             threading.Thread(target=self._quick_route, args=(system, station, generation), daemon=True).start()
-            route = self.trade_engine.calculate_route_via_spansh(system, station, capacity_override=self._free_capacity())
+            route = self.trade_engine.calculate_route_via_spansh(
+                system, station, capacity_override=self._free_capacity(),
+                max_hops=max(1, min(10, int(self.user_config.get('max_hops', 3)))))
             self._full_route_generation = generation
             quick = self._quick_route_of[1] if self._quick_route_of and self._quick_route_of[0] == generation else None
             if quick is not None and (route.error or (self.checklist is not None and self.checklist.route is quick
@@ -856,7 +929,10 @@ class EDTradeOverlayApp:
                         self._on_market(json.load(f))
                 except (json.JSONDecodeError, OSError) as e:
                     logger.warning("REFRESH: błąd odczytu Market.json: %s", e)
-            if "/" in self._last_system:
+            if self._flight_system:  # w locie: plan od bieżącego systemu (nie od ostatniej stacji)
+                self.checklist = None
+                self._plan_in_flight()
+            elif "/" in self._last_system:
                 system, station = self._last_system.split("/", 1)
                 event = self._last_docked_event
                 if (event.get("StarSystem"), event.get("StationName")) != (system, station):
@@ -874,6 +950,7 @@ class EDTradeOverlayApp:
             self._refresh_lock.release()
             if self.panel is not None:
                 self.panel.refresh_finished()
+            self.copy_current_target()  # REFRESH zawsze kładzie cel do schowka (nawet ten sam)
 
     def _apply_bar_visibility(self, window_class: Optional[str]) -> None:
         """Gdy włączone bar_only_when_game_focused: paski widoczne tylko, gdy fokus ma gra (albo panel aplikacji).

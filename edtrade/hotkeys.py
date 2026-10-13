@@ -27,15 +27,16 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 BAR_TARGETS = ("top_bar", "bottom_bar")
+ACTION_TARGETS = ("copy_target",)  # kopiuj cel do schowka (drugi raz w kilka sekund: stacja ↔ system)
 PANEL_PAGES = ("route", "nearby", "system", "materials", "mining", "commodity", "market", "journey",
                "engineering", "settings")
-TARGETS = BAR_TARGETS + PANEL_PAGES
+TARGETS = BAR_TARGETS + ACTION_TARGETS + PANEL_PAGES
 
 DEFAULT_MODIFIER = "Shift"
 DEFAULT_SLOTS: dict[str, str] = {
     "7": "system", "8": "top_bar", "9": "market",
     "4": "nearby", "5": "route", "6": "commodity",
-    "1": "engineering", "2": "bottom_bar", "3": "journey",
+    "1": "copy_target", "2": "bottom_bar", "3": "journey",
 }
 MODIFIERS = ("Shift", "Control", "Alt", "Control+Shift", "")
 

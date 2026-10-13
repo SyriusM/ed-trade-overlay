@@ -139,6 +139,10 @@ class TradePanel:
         self.on_refresh: Optional[Callable[[], None]] = None
         self._refreshing = False
         self.refresh_tab = self.title_bar.add_tab('REFRESH', self.fonts, command=self._refresh_clicked)
+        # [KOPIUJ CEL] / Ctrl+C: cel bieżącego hopu do schowka; drugi raz w ciągu kilku sekund — stacja ↔ system
+        self.on_copy_target: Optional[Callable[[], None]] = None
+        self.title_bar.add_tab('KOPIUJ CEL', self.fonts, command=self._copy_target_clicked)
+        self.window.bind('<Control-c>', lambda _e: self._copy_target_clicked(), add='+')
         self._context_lock = threading.Lock()
         self._context: dict = {'system': '', 'station': '', 'ship': '', 'capacity': 0, 'jump_range': 0.0,
                                'ship_large_pad': False, 'cargo': [], 'live_market': None}
@@ -475,7 +479,8 @@ class TradePanel:
         copy_combo = ttk.Combobox(options_line, textvariable=self.copy_target_var, values=list(COPY_TARGET_LABELS.values()),
                                   state='readonly', width=18)
         copy_combo.pack(side=tk.LEFT, padx=(6, 0))
-        copy_combo.bind('<<ComboboxSelected>>', lambda _e: self.user_config.__setitem__('copy_target', self._copy_target_key()))
+        copy_combo.bind('<<ComboboxSelected>>', lambda _e: (self.user_config.__setitem__('copy_target', self._copy_target_key()),
+                                                            self._copy_target_clicked(mode_change=True)))
 
         self.pad_filter_var = tk.StringVar(value=PAD_FILTER_LABELS.get(self.user_config.get('pad_filter', 'auto'),
                                                                         PAD_FILTER_LABELS['auto']))
@@ -548,6 +553,12 @@ class TradePanel:
         ttk.Scale(sec_line, from_=0.0, to=1.0, variable=self.security_weight_var, orient=tk.HORIZONTAL,
                   command=lambda _v: (sec_value.configure(text=f'{self.security_weight_var.get():.0%}'),
                                       self._security_changed())).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+
+        # Maks. liczba hopów trasy (Spansh) — więcej = dłuższe trasy, dłuższe liczenie
+        self.max_hops_var = tk.StringVar(value=str(self.user_config.get('max_hops', 3)))
+        ttk.Label(self.settings_frame, text='Maks. hopów trasy:').grid(row=18, column=0, sticky='w', padx=(0, 8), pady=2)
+        ttk.Spinbox(self.settings_frame, from_=1, to=10, textvariable=self.max_hops_var, width=5).grid(
+            row=18, column=1, sticky='w', pady=2)
 
         # EDDN — ceny od wszystkich graczy na żywo (zmiana działa po restarcie programu)
         self.eddn_var = tk.BooleanVar(value=bool(self.user_config.get('eddn_enabled', True)))
@@ -625,6 +636,10 @@ class TradePanel:
         elif self._cargo_meta is not None:
             self._render_cargo()
 
+    def _copy_target_clicked(self, mode_change: bool = False) -> None:
+        if self.on_copy_target is not None:
+            self.on_copy_target(mode_change)
+
     def _copy_target_key(self) -> str:
         return next((k for k, v in COPY_TARGET_LABELS.items() if v == self.copy_target_var.get()), 'station')
 
@@ -682,7 +697,8 @@ class TradePanel:
         ttk.Combobox(modifier_line, textvariable=self.hotkey_modifier_var, values=list(self._modifier_labels.values()),
                      state='readonly', width=14).pack(side=tk.LEFT, padx=(6, 0))
         self._target_labels = {'': '—'}
-        self._target_labels.update({'top_bar': 'Górny pasek', 'bottom_bar': 'Dolny pasek'})
+        self._target_labels.update({'top_bar': 'Górny pasek', 'bottom_bar': 'Dolny pasek',
+                                    'copy_target': 'Kopiuj cel (2× stacja/system)'})
         self._target_labels.update({page: self.notebook.tab(self.page_frame(page), 'text') for page in PANEL_PAGES})
         slots = slots_from_config(self.user_config)
         self.slot_vars: dict[str, tk.StringVar] = {}
@@ -1868,6 +1884,13 @@ class TradePanel:
         except ValueError:
             self.settings_status_var.set('Błąd: min. zysk ≥ 0, wiek cen ≥ 1 dzień (liczby).')
             return
+        try:
+            max_hops = int(float(self.max_hops_var.get().strip()))
+            if not 1 <= max_hops <= 10:
+                raise ValueError
+        except ValueError:
+            self.settings_status_var.set('Błąd: maks. hopów 1–10.')
+            return
         pad_filter = next((k for k, v in PAD_FILTER_LABELS.items() if v == self.pad_filter_var.get()), 'auto')
         market_type = next((k for k, v in MARKET_TYPE_LABELS.items() if v == self.market_type_var.get()), 'all')
 
@@ -1889,6 +1912,7 @@ class TradePanel:
             'max_data_age_days': max_age,
             'auto_copy_system': bool(self.auto_copy_var.get()),
             'copy_target': self._copy_target_key(),
+            'max_hops': max_hops,
             'risk_profile': self._risk_profile_key(),
             'eddn_enabled': bool(self.eddn_var.get()),
             'security_weight': round(self.security_weight_var.get(), 2),

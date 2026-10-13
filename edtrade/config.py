@@ -45,6 +45,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     'eddn_enabled': True,     # nasłuch cen na żywo z EDDN (wymaga pakietu pyzmq)
     'security_weight': 0.5,      # low-sec / anarchia: waga ryzyka w ocenie i rankingu (0 = ignoruj)
     'avoid_low_security': False, # całkiem pomijaj stacje w systemach Low / Anarchy
+    'max_hops': 3,               # maks. liczba hopów trasy (Spansh), 1–10
     'risk_profile': 'auto',     # 'auto' / 'safe' / 'optimal' / 'risky' — jak program wybiera okazje i trasy
     'copy_target': 'station', # co kopiować: 'station', 'system' albo 'both' ("Stacja (System)")
     'hotkey_modifier': 'Shift',
