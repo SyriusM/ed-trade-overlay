@@ -156,7 +156,9 @@ class EDTradeOverlayApp:
         self._show_overlay = not args.no_overlay
         self.user_config = user_config_module.load_user_config()
         assess.set_display(self.user_config.get('verdict_icons', True), self.user_config.get('verdict_labels', True))
-        trade_module.set_risk_profile(str(self.user_config.get('risk_profile', 'optimal')))
+        trade_module.set_risk_profile(str(self.user_config.get('risk_profile', 'auto')))
+        trade_module.set_security_prefs(float(self.user_config.get('security_weight', 0.5)),
+                                        bool(self.user_config.get('avoid_low_security', False)))
         self.overlay = TradeOverlay() if self._show_overlay else None
         if self.overlay is not None:
             self.overlay.apply_appearance(float(self.user_config.get('bar_alpha', 0.75)),
@@ -313,6 +315,18 @@ class EDTradeOverlayApp:
         self._copy_target(route)
         if not getattr(route, '_live_check', None):
             self._verify_live()  # rynek na żywo mógł przyjść przed końcem liczenia Spansh
+        threading.Thread(target=self._tag_security, args=(route,), daemon=True).start()
+
+    def _tag_security(self, route) -> None:
+        """Bezpieczeństwo systemu celu każdego hopu (Spansh, pamięć 6 h) → ostrzeżenie LOW SEC / ANARCHY na pasku."""
+        if route is None or route.error or not route.hops_list:
+            return
+        for hop in route.hops_list:
+            radius = max(20.0, hop.distance + 1.0)
+            hop._security = trade_module.security_near(hop.source_system, radius).get(
+                hop.destination_system.lower(), "")
+        if self.overlay:
+            self.overlay._refresh_now()
 
     def _calibrate(self, trip) -> None:
         """Realny czas lotu hopu vs ogólny szacunek → Twoje tempo (mnożnik czasu w rankingach CR/H)."""

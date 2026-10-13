@@ -121,7 +121,7 @@ class TradePanel:
         self.on_appearance_change = on_appearance_change
         self.on_verdict_display_change = on_verdict_display_change
         assess.set_display(self.user_config.get('verdict_icons', True), self.user_config.get('verdict_labels', True))
-        trade_mod.set_risk_profile(str(self.user_config.get('risk_profile', 'optimal')))
+        trade_mod.set_risk_profile(str(self.user_config.get('risk_profile', 'auto')))
         self.fonts = tce.Fonts(self.window, scale=float(self.user_config.get('panel_font_scale', 1.0)))
         tce.apply_ttk_theme(self.window, self.fonts)
 
@@ -521,6 +521,21 @@ class TradePanel:
         profile_combo.grid(row=15, column=1, sticky='ew', pady=2)
         profile_combo.bind('<<ComboboxSelected>>', lambda _e: self._risk_profile_changed())
 
+        # Bezpieczeństwo systemów (low-sec / anarchia): waga w ocenie i rankingu + twarde omijanie
+        self.security_weight_var = tk.DoubleVar(value=float(self.user_config.get('security_weight', 0.5)))
+        self.avoid_low_var = tk.BooleanVar(value=bool(self.user_config.get('avoid_low_security', False)))
+        trade_mod.set_security_prefs(self.security_weight_var.get(), self.avoid_low_var.get())
+        ttk.Label(self.settings_frame, text='Unikanie low-sec:').grid(row=17, column=0, sticky='w', padx=(0, 8), pady=2)
+        sec_line = ttk.Frame(self.settings_frame)
+        sec_line.grid(row=17, column=1, sticky='ew', pady=2)
+        ttk.Checkbutton(sec_line, text='Omijaj Low / Anarchy', variable=self.avoid_low_var,
+                        command=self._security_changed).pack(side=tk.RIGHT, padx=(12, 0))
+        sec_value = ttk.Label(sec_line, text=f'{self.security_weight_var.get():.0%}', width=5)
+        sec_value.pack(side=tk.RIGHT)
+        ttk.Scale(sec_line, from_=0.0, to=1.0, variable=self.security_weight_var, orient=tk.HORIZONTAL,
+                  command=lambda _v: (sec_value.configure(text=f'{self.security_weight_var.get():.0%}'),
+                                      self._security_changed())).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+
         # EDDN — ceny od wszystkich graczy na żywo (zmiana działa po restarcie programu)
         self.eddn_var = tk.BooleanVar(value=bool(self.user_config.get('eddn_enabled', True)))
         ttk.Label(self.settings_frame, text='Ceny na żywo (EDDN):').grid(row=16, column=0, sticky='w', padx=(0, 8), pady=2)
@@ -572,6 +587,14 @@ class TradePanel:
             text = f'baza: {markets:,} rynków · w tej sesji: {db.messages:,}'
         self.eddn_status.configure(text=text.upper())
         self.window.after(30_000, self._eddn_tick)
+
+    def _security_changed(self) -> None:
+        """Na żywo: waga low-sec przelicza rankingi z zapamiętanych danych; omijanie działa od następnego wyszukania."""
+        trade_mod.set_security_prefs(self.security_weight_var.get(), self.avoid_low_var.get())
+        if self._nearby_meta is not None:
+            self._render_nearby()
+        elif self._cargo_meta is not None:
+            self._render_cargo()
 
     def _risk_profile_key(self) -> str:
         return next((k for k, v in trade_mod.RISK_PROFILES.items() if v == self.risk_profile_var.get()), 'optimal')
@@ -1245,7 +1268,8 @@ class TradePanel:
             names.update(self._nearby_meta[3])
         name = getattr(trade, 'name', '') or names.get(trade.commodity.lower(), trade.commodity)
         where = f' → {trade.sell_station.upper()}' if trade.sell_station else ''
-        self.nearby_swot.config(text=f'{verdict.badge}  {name.upper()}{where}:  '
+        auto = f'  [AUTO → {verdict.auto_profile.upper()}]' if trade_mod.RISK_PROFILE == 'auto' and verdict.auto_profile else ''
+        self.nearby_swot.config(text=f'{verdict.badge}{auto}  {name.upper()}{where}:  '
                                      + (verdict.swot_text() or 'brak uwag').upper(),
                                 fg=tce.verdict_color(verdict.verdict, verdict.shade))
 
@@ -1670,6 +1694,8 @@ class TradePanel:
             'copy_target': self._copy_target_key(),
             'risk_profile': self._risk_profile_key(),
             'eddn_enabled': bool(self.eddn_var.get()),
+            'security_weight': round(self.security_weight_var.get(), 2),
+            'avoid_low_security': bool(self.avoid_low_var.get()),
             'verdict_icons': bool(self.verdict_icons_var.get()),
             'verdict_labels': bool(self.verdict_labels_var.get()),
         })

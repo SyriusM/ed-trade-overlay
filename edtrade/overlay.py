@@ -277,6 +277,10 @@ class TradeOverlay:
             verdict, shade = assess.assess_route_hop(sell_age)
             meta.insert(0, assess.badge_for(verdict, shade))
             meta_color = tce.verdict_color(verdict, shade)
+        security = getattr(current, '_security', '') if current is not None else ''
+        if security.lower() in ("low", "anarchy"):
+            meta.append(f"⚠ {security.upper()} SEC" if security.lower() == "low" else "⚠ ANARCHY")
+            meta_color = tce.RED
         if getattr(route, '_scoopable', False):
             meta.append("⛽")
         if self._copied_system and self._copied_system.lower() in ((display_dest_system or "").lower(),

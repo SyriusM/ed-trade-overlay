@@ -45,6 +45,7 @@ class Assessment:
     weaknesses: list[str] = field(default_factory=list)
     opportunities: list[str] = field(default_factory=list)
     threats: list[str] = field(default_factory=list)
+    auto_profile: str = ""             # profil, który AUTO dobrał tej okazji (safe/optimal/risky)
 
     @property
     def strong(self) -> bool:
@@ -118,7 +119,10 @@ def assess_trade(trade, best_value: float, value_of, capacity: int = 0) -> Asses
     r_age = age_risk(hours)
     r_demand = demand_risk(trade.demand, trade.units)
     r_trip = 0.15 if trade.travel_s > LONG_TRIP_S else 0.0
-    risk = combine(r_age, r_demand, r_trip)
+    from .trade import security_risk, auto_profile
+    security = getattr(trade, "security", "")
+    r_sec = security_risk(security)
+    risk = combine(r_age, r_demand, r_trip, r_sec)
     a = Assessment(*classify(value, risk), value=value, risk=risk)
 
     if value >= 0.95:
@@ -148,6 +152,11 @@ def assess_trade(trade, best_value: float, value_of, capacity: int = 0) -> Asses
         a.threats.append("prices " + ("unknown" if hours is None else f"{hours / 24:.0f} d" if hours >= 48 else f"{hours:.0f} h"))
     if r_demand:
         a.threats.append(f"shallow demand ({trade.demand:,})")
+    if r_sec >= 0.1:
+        a.threats.append(f"{security.lower()} security")
+    elif security.lower() == "high":
+        a.strengths.append("high security")
+    a.auto_profile = auto_profile(trade)
     return a
 
 

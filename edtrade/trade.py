@@ -580,6 +580,7 @@ class NearbyTrade:
     station_type: str = ""
     updated_at: str = ""
     travel_s: float = 0.0       # szacowany czas dolotu i dokowania
+    security: str = ""          # bezpieczeństwo systemu kupca: High / Medium / Low / Anarchy ("" = nieznane)
 
     @property
     def profit_per_unit(self) -> int:
@@ -619,41 +620,53 @@ RANK_MODES = {
 }
 
 
-RISK_PROFILES = {"safe": "SAFE — pewne ceny, mniejsze ryzyko", "optimal": "OPTIMAL — drogie towary, ale świeże ceny",
+RISK_PROFILES = {"auto": "AUTO — profil dobierany do każdej okazji", "safe": "SAFE — pewne ceny, mniejsze ryzyko", "optimal": "OPTIMAL — drogie towary, ale świeże ceny",
                  "risky": "RISKY — drogie towary, ryzyko za dużą nagrodę"}
-RISK_PROFILE = "optimal"  # ustawiane z configu (Ustawienia → Profil); rankingi czytają je przy każdym wywołaniu
+RISK_PROFILE = "auto"  # ustawiane z configu (Ustawienia → Profil); rankingi czytają je przy każdym wywołaniu
 
 
 def set_risk_profile(profile: str) -> None:
     global RISK_PROFILE
-    RISK_PROFILE = profile if profile in RISK_PROFILES else "optimal"
+    RISK_PROFILE = profile if profile in RISK_PROFILES else "auto"
 
 
 def trade_risk(t) -> float:
-    """Ryzyko okazji 0–1 (wiek cen, płytki popyt, długi lot) — to samo, co w ocenie SAFE/RISKY."""
+    """Ryzyko okazji 0–1 (wiek cen, płytki popyt, długi lot, bezpieczeństwo) — to samo, co w ocenie SAFE/RISKY."""
     from . import assess
     return assess.combine(assess.age_risk(t.age_hours), assess.demand_risk(t.demand, t.units),
-                          0.15 if t.travel_s > assess.LONG_TRIP_S else 0.0)
+                          0.15 if t.travel_s > assess.LONG_TRIP_S else 0.0, security_risk(t.security))
 
 
 RISKY_REWARD_PER_T = 20_000  # od tylu cr/t ryzyko "się opłaca" w pełni (drogie towary)
 
 
+def auto_profile(t) -> str:
+    """AUTO: profil dobrany do SWOT tej okazji — low-sec / płytki popyt → SAFE; drogi towar ze starszymi cenami →
+    RISKY (ryzyko się opłaca); reszta (świeże ceny) → OPTIMAL."""
+    from . import assess
+    if security_risk(t.security) >= 0.15 or assess.demand_risk(t.demand, t.units) >= 0.3:
+        return "safe"
+    if assess.age_risk(t.age_hours) >= 0.4 and t.profit_per_unit >= RISKY_REWARD_PER_T / 2:
+        return "risky"
+    return "optimal"
+
+
 def profile_weight(t, profile: Optional[str] = None) -> float:
     """Mnożnik zysku wg profilu: SAFE (1 − ryzyko)²; OPTIMAL pewność ceny + mała premia za drogi towar;
-    RISKY — ryzyko tylko za dużą nagrodę.
-
-    RISKY: im droższy towar (zysk/t → RISKY_REWARD_PER_T), tym mniej liczy się niepewność ceny, plus premia
-    do +25% — tani towar ze starymi cenami nie jest wart lotu, drogi tak.
+    RISKY — ryzyko tylko za dużą nagrodę; AUTO — profil dobrany do tej okazji. Bezpieczeństwo systemu
+    (waga z Ustawień) obniża wynik w każdym profilu.
     """
     profile = profile or RISK_PROFILE
+    if profile == "auto":
+        profile = auto_profile(t)
     reward = max(0.0, min(1.0, t.profit_per_unit / RISKY_REWARD_PER_T))
-    if profile == "risky":
-        return (t.confidence + (1 - t.confidence) * reward) * (1 + 0.25 * reward)
     if profile == "safe":
-        return (1 - trade_risk(t)) ** 2
+        return (1 - trade_risk(t)) ** 2  # trade_risk zawiera już bezpieczeństwo
+    security = 1 - security_risk(t.security)
+    if profile == "risky":
+        return (t.confidence + (1 - t.confidence) * reward) * (1 + 0.25 * reward) * security
     # OPTIMAL: też woli droższe towary (premia do +10%), ale pełna kara za wiek cen — świeższe niż RISKY
-    return t.confidence * (1 + 0.10 * reward)
+    return t.confidence * (1 + 0.10 * reward) * security
 
 
 def _rank_key(mode: str, profile: Optional[str] = None):
@@ -664,6 +677,63 @@ def _rank_key(mode: str, profile: Optional[str] = None):
     if mode == "time":
         return lambda t: (-t.travel_s, t.total_profit * w(t))
     return lambda t: (t.profit_per_hour * w(t), t.total_profit * w(t))
+
+
+SECURITY_RISK = {"high": 0.0, "medium": 0.1, "low": 0.35, "anarchy": 0.6}
+SECURITY_WEIGHT = 0.5      # Ustawienia: jak mocno low-sec obniża ocenę (0 = ignoruj, 1 = pełne ryzyko)
+AVOID_LOW_SECURITY = False  # Ustawienia: całkiem pomijaj stacje w systemach Low / Anarchy
+_security_cache: dict[tuple, tuple[float, dict]] = {}
+_security_lock = threading.Lock()
+_security_fetching: dict[tuple, threading.Lock] = {}
+
+
+def set_security_prefs(weight: float, avoid_low: bool) -> None:
+    global SECURITY_WEIGHT, AVOID_LOW_SECURITY
+    SECURITY_WEIGHT = max(0.0, min(1.0, float(weight)))
+    AVOID_LOW_SECURITY = bool(avoid_low)
+
+
+def security_near(reference_system: str, max_ly: float) -> dict[str, str]:
+    """{system lowercase: "High"/"Medium"/"Low"/"Anarchy"} w zasięgu — Spansh /api/systems/search (strony po 500),
+    pamięć podręczna 6 h na (system, zasięg). Błąd sieci → {} (bez kary, nie zgadujemy)."""
+    key = (reference_system.lower(), round(float(max_ly)))
+    with _security_lock:
+        fetch_lock = _security_fetching.setdefault(key, threading.Lock())
+    with fetch_lock:  # równoległe wywołania (OKOLICA, ładownia, szybka trasa) czekają na jedno zapytanie
+        with _security_lock:
+            hit = _security_cache.get(key)
+            if hit is not None and time.time() - hit[0] < 6 * 3600:
+                return hit[1]
+        return _fetch_security(key, reference_system, max_ly)
+
+
+def _fetch_security(key: tuple, reference_system: str, max_ly: float) -> dict[str, str]:
+    result: dict[str, str] = {}
+    try:
+        for page in range(4):
+            resp = requests.post("https://spansh.co.uk/api/systems/search", timeout=20, json={
+                "filters": {"distance": {"min": "0", "max": str(max_ly)}},
+                "sort": [{"distance": {"direction": "asc"}}], "size": 500, "page": page,
+                "reference_system": reference_system})
+            resp.raise_for_status()
+            data = resp.json()
+            for r in data.get("results") or []:
+                if r.get("name") and r.get("security"):
+                    result[r["name"].lower()] = r["security"]
+            if (page + 1) * 500 >= int(data.get("count") or 0):
+                break
+    except Exception as e:
+        logger.warning("Bezpieczeństwo systemów (Spansh) niedostępne: %s", e)
+        return {}
+    with _security_lock:
+        _security_cache[key] = (time.time(), result)
+    logger.info("Bezpieczeństwo: %d systemów w %.0f ly od %s", len(result), max_ly, reference_system)
+    return result
+
+
+def security_risk(security: str) -> float:
+    """Ryzyko z bezpieczeństwa systemu (piraci, interdykcje) × waga z Ustawień."""
+    return SECURITY_RISK.get((security or "").lower(), 0.0) * SECURITY_WEIGHT
 
 
 PRICE_DB = None  # edtrade.price_db.PriceDB z EDDN — ustawiane przez main, gdy nasłuch działa
@@ -682,14 +752,19 @@ def fresher_price(system: str, station: str, commodity: str, updated_at) -> Opti
 
 
 def candidate_trades(commodity: str, reference_system: str, units: int, buy_price: int, market_filter,
-                     max_ly: float = 40.0, exclude_market: str = "", jump_range: float = 30.0) -> list[NearbyTrade]:
+                     max_ly: float = 40.0, exclude_market: str = "", jump_range: float = 30.0,
+                     security: Optional[dict] = None) -> list[NearbyTrade]:
     """Wszyscy opłacalni kupcy w zasięgu (po filtrze) — wybór najlepszego zależy od trybu rankingu."""
     trades = []
+    security = security or {}
     for b in find_mineral_buyers(commodity, reference_system, max_ly=max_ly, min_demand=1,
                                  max_days=market_filter.max_data_age_days, size=100):
         if not market_filter.accepts(b.pad_size, b.distance_to_arrival, b.station_type):
             continue
         if exclude_market and b.station_name.lower() == exclude_market.lower() and b.system_name.lower() == reference_system.lower():
+            continue
+        sec = security.get(b.system_name.lower(), "")
+        if AVOID_LOW_SECURITY and sec.lower() in ("low", "anarchy"):
             continue
         sell_price, demand, updated_at = b.sell_price, b.demand, b.updated_at
         fresher = fresher_price(b.system_name, b.station_name, commodity, b.updated_at)
@@ -702,7 +777,7 @@ def candidate_trades(commodity: str, reference_system: str, units: int, buy_pric
                             sell_station=b.station_name, sell_system=b.system_name, sell_price=sell_price,
                             demand=demand, distance=b.distance, distance_to_arrival=b.distance_to_arrival,
                             pad_size=b.pad_size, station_type=b.station_type, updated_at=updated_at,
-                            travel_s=travel_seconds(b.distance, b.distance_to_arrival, jump_range))
+                            travel_s=travel_seconds(b.distance, b.distance_to_arrival, jump_range), security=sec)
         # Ładunek w ładowni (buy_price 0) — liczy się każda sprzedaż; zakup tutaj — co najmniej min. zysk/t
         min_profit = market_filter.min_profit_per_t if buy_price else 1
         if trade.profit_per_unit >= max(1, min_profit) and trade.units > 0:
@@ -762,9 +837,11 @@ def _parallel_candidates(jobs: list[dict], reference_system: str, market_filter,
                          exclude_market: str = "", workers: int = 6, jump_range: float = 30.0) -> list[list[NearbyTrade]]:
     from concurrent.futures import ThreadPoolExecutor
     _ardent_commodity_names()  # wspólna lista nazw — pobrana raz, zanim ruszą wątki
+    security = security_near(reference_system, max_ly)  # jedno zapytanie dla wszystkich kupców w zasięgu
     with ThreadPoolExecutor(max_workers=workers) as pool:
         results = list(pool.map(lambda j: candidate_trades(j["name"], reference_system, j["units"], j["buy_price"],
-                                                           market_filter, max_ly, exclude_market, jump_range), jobs))
+                                                           market_filter, max_ly, exclude_market, jump_range,
+                                                           security), jobs))
     for job, cands in zip(jobs, results):
         for trade in cands:
             trade.stock = job.get("stock", 0)

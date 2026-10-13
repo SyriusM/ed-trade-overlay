@@ -38,7 +38,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     'verdict_labels': True,   # ocena okazji: opis (OPTIMAL, VERY SAFE…)
     'auto_copy_system': True, # nowa trasa / następny hop → cel do schowka
     'eddn_enabled': True,     # nasłuch cen na żywo z EDDN (wymaga pakietu pyzmq)
-    'risk_profile': 'optimal',  # 'safe' / 'optimal' / 'risky' — jak program wybiera okazje i trasy
+    'security_weight': 0.5,      # low-sec / anarchia: waga ryzyka w ocenie i rankingu (0 = ignoruj)
+    'avoid_low_security': False, # całkiem pomijaj stacje w systemach Low / Anarchy
+    'risk_profile': 'auto',     # 'auto' / 'safe' / 'optimal' / 'risky' — jak program wybiera okazje i trasy
     'copy_target': 'station', # co kopiować: 'station', 'system' albo 'both' ("Stacja (System)")
 }
 

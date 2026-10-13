@@ -34,7 +34,11 @@ clunky workflow. The game is never automated: the app only reads the journal and
 - `▲S / ▼W / ▲O / ▼T` strengths, weaknesses, opportunities and threats for the selected row.
 - Your hold: `= SELL HERE`, `► SELL THERE` or `■ HOLD` (no buyer, selling at a loss vs what you paid this
   session, or price well below the galactic average).
-- **Risk profile** changes how trades and routes are chosen: SAFE penalises any uncertainty, OPTIMAL prefers
+- **AUTO profile** (default) picks a strategy per opportunity from its SWOT: low-security or shallow demand → SAFE,
+  expensive goods with older prices → RISKY, fresh prices → OPTIMAL.
+- **System security** counts in every profile: Low/Anarchy systems lower the score by an adjustable weight, or can be
+  skipped entirely; the bar warns when the route target is in a low-security system.
+- **Risk profile** can also be fixed manually: SAFE penalises any uncertainty, OPTIMAL prefers
   valuable goods but only with fresh prices, RISKY accepts stale prices only for expensive goods where the reward pays for the risk.
 
 ![Nearby trades](docs/screenshots/nearby.png)
@@ -59,7 +63,7 @@ Requirements: Linux with X11 (or XWayland), Python 3.12 with Tk, `requests`.
 ```bash
 git clone https://github.com/SyriusM/ed-trade-overlay.git
 cd ed-trade-overlay
-pip install requests
+pip install requests pyzmq      # pyzmq is optional (live EDDN prices)
 python -m edtrade.main          # finds the Proton journal folder automatically
 python -m edtrade.main --help   # journal dir, capacity, jump range, --no-panel, --no-overlay
 ```
@@ -73,6 +77,8 @@ font size, verdict icons/labels, clipboard, risk profile) are saved in `~/.confi
 - [Ardent Insight](https://ardent-insight.com) — station markets and nearby buyers/sellers
 - [EDCD FDevIDs](https://github.com/EDCD/FDevIDs) and [coriolis-data](https://github.com/EDCD/coriolis-data) —
   commodity/material names and blueprints, downloaded at runtime and cached (not redistributed)
+- [EDDN](https://github.com/EDCD/EDDN) — live market updates from all players (optional, needs `pyzmq`), stored
+  in a local price database with 30 days of history
 - Your own game journal, `Cargo.json` and `Market.json`
 
 Elite Dangerous is a trademark of Frontier Developments plc. This is an unofficial fan tool, not affiliated

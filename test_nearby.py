@@ -56,6 +56,7 @@ class TestRanking(unittest.TestCase):
     def test_cargo_skips_limpets_and_mission_cargo(self):
         seen = []
         with mock.patch.object(trade, "_ardent_commodity_names", return_value=[]), \
+                mock.patch.object(trade, "security_near", return_value={}), \
                 mock.patch.object(trade, "candidate_trades", side_effect=lambda name, *a, **k: seen.append(name) or []):
             trade.best_sales_for_cargo([{"Name": "drones", "Count": 10}, {"Name": "gold", "Count": 5, "MissionID": 1},
                                         {"Name": "nonlethalweapons", "Count": 246}], "NN 3009", MarketFilter())

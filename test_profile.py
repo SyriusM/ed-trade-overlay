@@ -26,9 +26,9 @@ def test_global_profile_used_by_default():
         T.set_risk_profile("risky")
         assert T.rank_trades([[stale_big], [fresh_small]])[0] is stale_big
         T.set_risk_profile("nonsense")
-        assert T.RISK_PROFILE == "optimal"
+        assert T.RISK_PROFILE == "auto"
     finally:
-        T.set_risk_profile("optimal")
+        T.set_risk_profile("auto")
 
 
 def test_safe_penalises_shallow_demand():
@@ -57,3 +57,35 @@ def test_optimal_prefers_expensive_only_when_fresh():
     pricey_old.units = 100              # ten sam, ale ceny sprzed 2 dni → OPTIMAL woli świeży
     assert T.rank_trades([[pricey_old], [bulk_fresh]], "total", "optimal")[0] is bulk_fresh
     assert T.rank_trades([[pricey_old], [bulk_fresh]], "total", "risky")[0] is pricey_old
+
+
+def test_low_security_lowers_score_in_every_profile_and_can_be_avoided():
+    from unittest import mock
+    from edtrade.filters import MarketFilter
+    safe_sys, low_sys = _t(10_000, 1), _t(11_000, 1)
+    safe_sys.security, low_sys.security = "High", "Anarchy"
+    try:
+        T.set_security_prefs(1.0, False)
+        for profile in ("safe", "optimal", "risky", "auto"):
+            assert T.rank_trades([[safe_sys], [low_sys]], "per_hour", profile)[0] is safe_sys, profile
+        T.set_security_prefs(0.0, False)  # waga 0 — bezpieczeństwo ignorowane
+        assert T.rank_trades([[safe_sys], [low_sys]], "per_hour", "optimal")[0] is low_sys
+        T.set_security_prefs(0.0, True)   # przełącznik: omijaj Low/Anarchy
+        buyers = [T.MineralBuyer("A", "Anarchy Sys", 60000, 5000, "large", 10, 100),
+                  T.MineralBuyer("B", "High Sys", 50000, 5000, "large", 10, 100)]
+        with mock.patch.object(T, "find_mineral_buyers", return_value=buyers):
+            got = T.candidate_trades("gold", "Sol", 100, 1000, MarketFilter(),
+                                     security={"anarchy sys": "Anarchy", "high sys": "High"})
+        assert [t.sell_station for t in got] == ["B"]
+    finally:
+        T.set_security_prefs(0.5, False)
+
+
+def test_auto_picks_profile_per_trade():
+    fresh = _t(5_000, 1)
+    stale_pricey = _t(15_000, 24 * 5)
+    lowsec = _t(5_000, 1)
+    lowsec.security = "Low"
+    assert T.auto_profile(fresh) == "optimal"
+    assert T.auto_profile(stale_pricey) == "risky"
+    assert T.auto_profile(lowsec) == "safe"
