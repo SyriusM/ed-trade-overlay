@@ -40,7 +40,7 @@ PAGE_HINTS = {
     'Mining': 'Gdzie kopać (hotspoty) i gdzie sprzedać. Dwuklik: kopiuj system.',
     'Blueprinty': 'Czego brakuje do ulepszenia — stan materiałów z journala.',
     'Sesja': 'Zarobki z tej sesji gry (od uruchomienia gry), liczone z journala. Prawy klik: rynek stacji.',
-    'Ustawienia': 'Filtry rynków, wygląd paska i panelu. Zapisz, żeby zachować.',
+    'Ustawienia': 'Filtry rynków, wygląd paska i panelu. Zmiany zapisują się same.',
 }
 PAD_FILTER_LABELS = {'auto': 'Automatycznie (ze statku)', 'large': 'Tylko pad L', 'all': 'Wszystkie pady'}
 MARKET_TYPE_LABELS = {'all': 'Wszystkie', 'space': 'Tylko kosmiczne', 'planetary': 'Tylko planetarne'}
@@ -580,6 +580,9 @@ class TradePanel:
             self.nav.select_frame(start_page)
         self._bind_all_row_actions()
         self.window.bind('<Configure>', self._schedule_layout_save, add='+')
+        # Autozapis Ustawień: każda zmiana pola zapisuje config (po 0.5 s spokoju) — przycisk Zapisz niepotrzebny
+        self._autosave_job = None
+        self._watch_settings(self.settings_frame)
 
     def _eddn_tick(self) -> None:
         """Status EDDN co 30 s: połączenie i ile rynków jest w lokalnej bazie."""
@@ -625,9 +628,6 @@ class TradePanel:
             self._render_cargo()
         if self.on_verdict_display_change is not None:
             self.on_verdict_display_change()
-
-        self._autosave_job = None
-        self._watch_settings(self.settings_frame)
 
     def _watch_settings(self, frame: tk.Misc) -> None:
         """Autozapis: każda zmienna podpięta pod widżet w zakładce Ustawienia zapisuje config po zmianie.
