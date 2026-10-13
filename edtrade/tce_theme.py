@@ -218,6 +218,7 @@ class DataTable(tk.Frame):
         self.tree.tag_configure("good", foreground=GREEN)
         self.tree.tag_configure("bad", foreground=RED)
         self._sort_values: dict[str, dict] = {}
+        self._payloads: dict = {}
 
     def _fit_columns(self, event: tk.Event) -> None:
         total = sum(self._base_widths.values())
@@ -225,15 +226,28 @@ class DataTable(tk.Frame):
             self.tree.column(key, width=max(20, int(width * event.width / total)))
 
     def set_rows(self, rows: Sequence[Sequence], sort_values: Optional[Sequence[dict]] = None,
-                 tags: Optional[Sequence[str]] = None) -> None:
-        """rows: wartości wyświetlane; sort_values: opcjonalne surowe wartości do sortowania (klucz kolumny → liczba)."""
+                 tags: Optional[Sequence[str]] = None, payloads: Optional[Sequence] = None) -> None:
+        """rows: wartości wyświetlane; sort_values: surowe wartości do sortowania; payloads: obiekt za wierszem."""
         self.tree.delete(*self.tree.get_children())
         self._sort_values = {}
+        self._payloads = {}
         for i, row in enumerate(rows):
             iid = self.tree.insert("", tk.END, values=[str(v).upper() for v in row],
                                    tags=(tags[i],) if tags and tags[i] else ())
             if sort_values:
                 self._sort_values[iid] = sort_values[i]
+            if payloads:
+                self._payloads[iid] = payloads[i]
+
+    def selected_payload(self):
+        selection = self.tree.selection()
+        return self._payloads.get(selection[0]) if selection else None
+
+    def on_activate(self, callback) -> None:
+        """Dwuklik / Enter na wierszu → callback(payload) — jak PREVIEW w Route Finder TCE."""
+        handler = lambda _e: (self.selected_payload() is not None) and callback(self.selected_payload())
+        self.tree.bind("<Double-1>", handler)
+        self.tree.bind("<Return>", handler)
 
     def rows(self) -> list[tuple]:
         return [tuple(self.tree.item(i, "values")) for i in self.tree.get_children()]
@@ -293,3 +307,62 @@ class NavBar(tk.Frame):
 
     def select_frame(self, frame: tk.Misc) -> None:
         self.segments.select(str(frame))
+
+
+class GroupedNavBar(tk.Frame):
+    """Nawigacja w dwóch poziomach: grupy wg celu (HANDEL / NAWIGACJA / …) i strony w grupie.
+
+    Zamiast jednego rzędu wszystkich stron (TCE ma płaskie menu, łatwo się zgubić).
+    """
+
+    def __init__(self, parent: tk.Misc, notebook: ttk.Notebook, fonts: Fonts,
+                 groups: Sequence[tuple[str, Sequence[tk.Misc]]], on_change: Optional[Callable[[str], None]] = None):
+        super().__init__(parent, bg=BG)
+        self.notebook = notebook
+        self._on_change = on_change
+        self._pages = {title: [str(f) for f in frames] for title, frames in groups}
+        self._group_of = {page: title for title, pages in self._pages.items() for page in pages}
+        self._last_page = {title: pages[0] for title, pages in self._pages.items()}
+        first = groups[0][0]
+        self.groups = SegmentedButtons(self, [(t, t) for t, _ in groups], fonts, command=self._select_group, initial=first)
+        self.groups.pack(fill=tk.X)
+        self._sub_holder = tk.Frame(self, bg=BG)
+        self._sub_holder.pack(fill=tk.X, pady=(4, 0))
+        self._subs: dict[str, SegmentedButtons] = {}
+        for title, pages in self._pages.items():
+            if len(pages) > 1:
+                self._subs[title] = SegmentedButtons(
+                    self._sub_holder, [(pid, notebook.tab(pid, "text")) for pid in pages], fonts,
+                    command=self._select_page, initial=pages[0])
+        self._show_group(first)
+        self._show(self._last_page[first])
+
+    def _show_group(self, title: str) -> None:
+        for name, sub in self._subs.items():
+            if name == title:
+                sub.pack(fill=tk.X, padx=(24, 0))
+            else:
+                sub.pack_forget()
+
+    def _select_group(self, title: str) -> None:
+        self._show_group(title)
+        self._show(self._last_page[title])
+
+    def _select_page(self, page_id: str) -> None:
+        self._last_page[self._group_of[page_id]] = page_id
+        self._show(page_id)
+
+    def _show(self, page_id: str) -> None:
+        self.notebook.select(page_id)
+        if self._on_change:
+            self._on_change(self.notebook.tab(page_id, "text"))
+
+    def select_frame(self, frame: tk.Misc) -> None:
+        page_id = str(frame)
+        title = self._group_of[page_id]
+        self.groups.select(title, notify=False)
+        self._show_group(title)
+        if title in self._subs:
+            self._subs[title].select(page_id, notify=False)
+        self._last_page[title] = page_id
+        self._show(page_id)

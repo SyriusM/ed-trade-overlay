@@ -5,6 +5,7 @@ to jest zwykły tk.Toplevel — widoczny w Alt-Tab, przeciągalny, z dekoracją.
 """
 
 import logging
+import re
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -21,6 +22,19 @@ from .trade import (get_system_info, search_stations, find_material_traders, fin
                     nearby_candidates_from_market, cargo_candidates, rank_trades, RANK_MODES)
 
 COMMODITY_MODES = ('Kup', 'Sprzedaj')
+PAGE_HINTS = {
+    'Trasa': 'Najlepsza trasa z bieżącej stacji — liczy się sama po dokowaniu, kroki odhaczają się z gry.',
+    'Okolica': 'Co kupić tutaj i gdzie to sprzedać, plus Twój ładunek. Dwuklik: kopiuj system · prawy klik: więcej.',
+    'Porównaj': 'Bieżąca stacja vs cel (jak Trade Overview w TCE). Otwórz z OKOLICY: prawy klik → Porównaj.',
+    'Market': 'Pełny rynek jednej stacji. Wypełnia się sam po dokowaniu.',
+    'Towary': 'Gdzie najtaniej kupić / najdrożej sprzedać dowolny towar. Dwuklik: kopiuj system.',
+    'Journey': 'Trasa skoków A → B (Spansh). Dwuklik na systemie: kopiuj do mapy galaktyki.',
+    'System': 'Stacje w systemie. Dwuklik: kopiuj system · prawy klik: rynek / porównaj.',
+    'Materiały': 'Najbliżsi handlarze materiałów. Dwuklik: kopiuj system.',
+    'Mining': 'Gdzie kopać (hotspoty) i gdzie sprzedać. Dwuklik: kopiuj system.',
+    'Blueprinty': 'Czego brakuje do ulepszenia — stan materiałów z journala.',
+    'Ustawienia': 'Filtry rynków, wygląd paska i panelu. Zapisz, żeby zachować.',
+}
 PAD_FILTER_LABELS = {'auto': 'Automatycznie (ze statku)', 'large': 'Tylko pad L', 'all': 'Wszystkie pady'}
 MARKET_TYPE_LABELS = {'all': 'Wszystkie', 'space': 'Tylko kosmiczne', 'planetary': 'Tylko planetarne'}
 PANEL_TITLE = 'ED Trade Panel'
@@ -71,7 +85,9 @@ class TradePanel:
         self.trade_engine = TradeEngine()
         self.window = tk.Toplevel(master)
         self.window.title(PANEL_TITLE)
-        self.window.geometry('1100x700')
+        geometry = str(self.user_config.get('panel_geometry', '1100x700'))
+        self.window.geometry(geometry if re.fullmatch(r'\d+x\d+([+-]-?\d+[+-]-?\d+)?', geometry) else '1100x700')
+        self._layout_save_job = None
         self.window.configure(bg=tce.BG)
         # X minimalizuje okno zamiast je niszczyć — panel wraca z paska zadań / Alt-Tab
         self.window.protocol('WM_DELETE_WINDOW', self.window.iconify)
@@ -142,6 +158,8 @@ class TradePanel:
             ('time', 'Czas', 60, 'e'), ('per_h', 'CR/H', 100, 'e'), ('distance', 'Odl.', 60, 'e'),
             ('arrival', 'LS', 60, 'e'), ('pad', 'Pad', 40, 'center'), ('age', 'Dane', 55, 'e')], height=4)
         self.nearby_cargo_table.pack(fill=tk.X, padx=10, pady=(2, 10))
+
+        self._build_overview_tab()
 
         self.tab_system = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_system, text='System')
@@ -303,7 +321,7 @@ class TradePanel:
         self.journey_table.pack(fill=tk.BOTH, expand=True, padx=10, pady=(2, 10))
 
         self.tab_engineering = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_engineering, text='Inżynieria')
+        self.notebook.add(self.tab_engineering, text='Blueprinty')
 
         self._materials_lock = threading.Lock()
         self._materials_inventory: dict[str, int] = {}
@@ -391,6 +409,12 @@ class TradePanel:
         ttk.Label(self.settings_frame, text='Typ rynku:').grid(row=8, column=0, sticky='w', padx=(0, 8), pady=4)
         ttk.Combobox(self.settings_frame, textvariable=self.market_type_var, values=list(MARKET_TYPE_LABELS.values()),
                      state='readonly').grid(row=8, column=1, sticky='ew', pady=4)
+        self.min_profit_var = tk.StringVar(value=str(self.user_config.get('min_profit_per_t', 500)))
+        self.max_age_var = tk.StringVar(value=str(self.user_config.get('max_data_age_days', 7)))
+        ttk.Label(self.settings_frame, text='Min. zysk (cr/t):').grid(row=9, column=0, sticky='w', padx=(0, 8), pady=4)
+        ttk.Entry(self.settings_frame, textvariable=self.min_profit_var).grid(row=9, column=1, sticky='ew', pady=4)
+        ttk.Label(self.settings_frame, text='Maks. wiek cen (dni):').grid(row=10, column=0, sticky='w', padx=(0, 8), pady=4)
+        ttk.Entry(self.settings_frame, textvariable=self.max_age_var).grid(row=10, column=1, sticky='ew', pady=4)
 
         self.bar_alpha_var = tk.DoubleVar(value=float(self.user_config.get('bar_alpha', 0.75)))
         self.bar_scale_var = tk.DoubleVar(value=float(self.user_config.get('bar_font_scale', 1.0)))
@@ -398,7 +422,7 @@ class TradePanel:
         for row, (title, var, lo, hi) in enumerate((
                 ('Przezroczystość paska:', self.bar_alpha_var, 0.3, 1.0),
                 ('Czcionka paska (skala):', self.bar_scale_var, 0.7, 1.8),
-                ('Czcionka panelu (skala):', self.panel_scale_var, 0.7, 1.8)), start=9):
+                ('Czcionka panelu (skala):', self.panel_scale_var, 0.7, 1.8)), start=11):
             ttk.Label(self.settings_frame, text=title).grid(row=row, column=0, sticky='w', padx=(0, 8), pady=4)
             line = ttk.Frame(self.settings_frame)
             line.grid(row=row, column=1, sticky='ew', pady=4)
@@ -409,15 +433,31 @@ class TradePanel:
                 side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
 
         self.save_settings_btn = ttk.Button(self.settings_frame, text='Zapisz', command=self.save_settings)
-        self.save_settings_btn.grid(row=12, column=1, sticky='w', pady=(10, 4))
+        self.save_settings_btn.grid(row=14, column=1, sticky='w', pady=(10, 4))
 
         self.settings_status_var = tk.StringVar(value='')
-        ttk.Label(self.settings_frame, textvariable=self.settings_status_var).grid(row=13, column=1, sticky='w', pady=4)
+        ttk.Label(self.settings_frame, textvariable=self.settings_status_var).grid(row=15, column=1, sticky='w', pady=4)
 
         tce.uppercase_static_texts(self.window)
         self._render_context()
-        self.nav = tce.NavBar(self.window, self.notebook, self.fonts, on_change=self.title_bar.set_title)
+        self.hint_label = tk.Label(self.window, text='', bg=tce.BG, fg=tce.ORANGE_DIM, font=self.fonts.body_bold,
+                                   anchor='w', padx=10)
+        self._hint_text = ''
+        self._toast_job = None
+        self.nav = tce.GroupedNavBar(self.window, self.notebook, self.fonts, [
+            ('Handel', [self.tab_route, self.tab_nearby, self.tab_overview, self.tab_market, self.tab_commodity]),
+            ('Nawigacja', [self.tab_journey, self.tab_system]),
+            ('Inżynieria', [self.tab_materials, self.tab_mining, self.tab_engineering]),
+            ('Ustawienia', [self.tab_settings]),
+        ], on_change=self._page_changed)
         self.nav.pack(fill=tk.X, padx=8, pady=(6, 0), before=self.notebook)
+        self.hint_label.pack(fill=tk.X, padx=8, pady=(2, 0), before=self.notebook)
+        pages = {self.notebook.tab(t, 'text'): t for t in self.notebook.tabs()}
+        start_page = pages.get(str(self.user_config.get('panel_page', '')))
+        if start_page:
+            self.nav.select_frame(start_page)
+        self._bind_all_row_actions()
+        self.window.bind('<Configure>', self._schedule_layout_save, add='+')
 
     def _appearance_preview(self, var: tk.DoubleVar, value_label: ttk.Label) -> None:
         """Suwaki CONTROL działają na żywo; zapis do configu dopiero przyciskiem ZAPISZ."""
@@ -460,6 +500,101 @@ class TradePanel:
         cargo = sum(int(c.get('Count') or 0) for c in ctx['cargo'])
         self.context_label.config(text=f'POZYCJA: {where}    STATEK: {ship}    ŁADUNEK: {cargo} t    '
                                        f'FILTR: {self._market_filter().describe()}'.upper())
+
+    def _page_changed(self, title: str) -> None:
+        self.title_bar.set_title(title)
+        self._hint_text = PAGE_HINTS.get(title, '')
+        if self._toast_job is None:
+            self.hint_label.config(text=self._hint_text.upper(), fg=tce.ORANGE_DIM)
+        self.user_config['panel_page'] = title
+        self._schedule_layout_save()
+
+    def _schedule_layout_save(self, event=None) -> None:
+        """Zapamietaj rozmiar/pozycje okna i strone — z opoznieniem, zeby przeciaganie nie pisalo pliku co piksel."""
+        if event is not None and event.widget is not self.window:
+            return
+        if self._layout_save_job is not None:
+            self.window.after_cancel(self._layout_save_job)
+        self._layout_save_job = self.window.after(1000, self._save_layout)
+
+    def _save_layout(self) -> None:
+        self._layout_save_job = None
+        if self.window.state() != 'normal' or not self.window.winfo_ismapped():
+            return
+        self.user_config['panel_geometry'] = self.window.geometry()
+        try:
+            save_user_config(self.user_config, self.config_path)
+        except OSError:
+            logger.exception('Nie udało się zapisać układu panelu')
+
+    def toast(self, message: str, seconds: float = 5.0) -> None:
+        """Krotki komunikat w linii podpowiedzi (np. po skopiowaniu systemu)."""
+        if self._toast_job is not None:
+            self.window.after_cancel(self._toast_job)
+        self.hint_label.config(text=message.upper(), fg=tce.GREEN)
+        self._toast_job = self.window.after(int(seconds * 1000), self._end_toast)
+
+    def _end_toast(self) -> None:
+        self._toast_job = None
+        self.hint_label.config(text=self._hint_text.upper(), fg=tce.ORANGE_DIM)
+
+    def copy_system(self, system: str) -> None:
+        """Nazwa systemu do schowka — w grze: mapa galaktyki → pole wyszukiwania → Ctrl+V."""
+        self.window.clipboard_clear()
+        self.window.clipboard_append(system)
+        self.toast(f'Skopiowano „{system}” — wklej w mapie galaktyki (Ctrl+V)')
+
+    def show_market_of(self, system: str, station: str) -> None:
+        self.market_system_var.set(system)
+        self.market_station_var.set(station)
+        self.nav.select_frame(self.tab_market)
+        self.refresh_market_tab()
+
+    def _bind_row_actions(self, table, locate) -> None:
+        """Jednolite akcje wierszy: dwuklik = kopiuj system; prawy klik = menu (kopiuj / rynek / porownaj)."""
+        menu = tk.Menu(self.window, tearoff=0, bg=tce.ROW_BG, fg=tce.ORANGE, activebackground=tce.ORANGE,
+                       activeforeground=tce.TEXT_ON_ORANGE, font=self.fonts.body_bold, bd=0)
+
+        def target(event=None):
+            tree = table.tree
+            iid = tree.identify_row(event.y) if event is not None else (tree.selection() or [''])[0]
+            if not iid:
+                return None
+            tree.selection_set(iid)
+            return locate(table._payloads.get(iid), tree.item(iid, 'values'))
+
+        def on_double(event):
+            found = target(event)
+            if found and found[0]:
+                self.copy_system(found[0])
+
+        def on_menu(event):
+            found = target(event)
+            if not found or not found[0]:
+                return
+            system, station = found
+            menu.delete(0, tk.END)
+            menu.add_command(label=f'KOPIUJ SYSTEM: {system.upper()}', command=lambda: self.copy_system(system))
+            if station:
+                menu.add_command(label=f'POKAŻ RYNEK: {station.upper()}', command=lambda: self.show_market_of(system, station))
+                menu.add_command(label='PORÓWNAJ Z MOJĄ STACJĄ',
+                                 command=lambda: self.open_overview(system, station))
+            menu.tk_popup(event.x_root, event.y_root)
+
+        table.tree.bind('<Double-1>', on_double)
+        table.tree.bind('<Button-3>', on_menu)
+
+    def _bind_all_row_actions(self) -> None:
+        payload = lambda attr_system, attr_station: (
+            lambda p, v: (getattr(p, attr_system), getattr(p, attr_station) if attr_station else '') if p else None)
+        self._bind_row_actions(self.nearby_table, payload('sell_system', 'sell_station'))
+        self._bind_row_actions(self.nearby_cargo_table, payload('sell_system', 'sell_station'))
+        self._bind_row_actions(self.mining_buyers_table, payload('system_name', 'station_name'))
+        self._bind_row_actions(self.mining_hotspots_table, payload('system_name', ''))
+        self._bind_row_actions(self.commodity_table, lambda p, v: (v[1], v[0]))
+        self._bind_row_actions(self.materials_table, lambda p, v: (v[1], v[0]))
+        self._bind_row_actions(self.system_table, lambda p, v: (self.system_entry_var.get().strip(), v[0]))
+        self._bind_row_actions(self.journey_table, lambda p, v: (v[1], ''))
 
     def _open_settings(self) -> None:
         self.nav.select_frame(self.tab_settings)
@@ -559,7 +694,7 @@ class TradePanel:
             hotspots = []
             errors.append(f'hotspoty: {e}')
         try:
-            buyers = [b for b in find_mineral_buyers(mineral, system_name, max_ly=60, size=100)
+            buyers = [b for b in find_mineral_buyers(mineral, system_name, max_ly=60, max_days=market_filter.max_data_age_days, size=100)
                       if market_filter.accepts(b.pad_size, b.distance_to_arrival, b.station_type)][:20]
         except Exception as e:
             buyers = []
@@ -574,11 +709,13 @@ class TradePanel:
         self.mining_hotspots_table.set_rows(
             [(h.ring_name or h.body_name, h.ring_type, h.count, f'{h.distance:.1f} ly', f'{h.distance_to_arrival:,.0f}')
              for h in hotspots],
-            sort_values=[{'count': h.count, 'distance': h.distance, 'arrival': h.distance_to_arrival} for h in hotspots])
+            sort_values=[{'count': h.count, 'distance': h.distance, 'arrival': h.distance_to_arrival} for h in hotspots],
+            payloads=hotspots)
         self.mining_buyers_table.set_rows(
             [(b.station_name, f'{b.sell_price:,}', f'{b.demand:,}', f'{b.distance:.1f} ly', b.pad_size or '?',
               _data_age(b.updated_at)) for b in buyers],
-            sort_values=[{'price': b.sell_price, 'demand': b.demand, 'distance': b.distance} for b in buyers])
+            sort_values=[{'price': b.sell_price, 'demand': b.demand, 'distance': b.distance} for b in buyers],
+            payloads=buyers)
         self.mining_hotspots_header.set(right_text=str(len(hotspots)))
         self.mining_buyers_header.set(right_text=str(len(buyers)))
         self.mining_header.set(f'Błąd: {error}' if error else f'{mineral} wokół {system_name}', '')
@@ -601,13 +738,13 @@ class TradePanel:
         rows, error = [], ''
         try:
             if mode == 'Sprzedaj':
-                found = [b for b in find_mineral_buyers(commodity, system_name, max_ly=60, size=100)
+                found = [b for b in find_mineral_buyers(commodity, system_name, max_ly=60, max_days=market_filter.max_data_age_days, size=100)
                          if market_filter.accepts(b.pad_size, b.distance_to_arrival, b.station_type)][:25]
                 rows = [(b.station_name, b.system_name, f'{b.sell_price:,} cr', f'{b.demand:,}', f'{b.distance:.1f} ly',
                          b.pad_size or '?', _data_age(b.updated_at),
                          {'price': b.sell_price, 'volume': b.demand, 'distance': b.distance}) for b in found]
             else:
-                found = [x for x in find_commodity_sellers(commodity, system_name, max_ly=60, size=100)
+                found = [x for x in find_commodity_sellers(commodity, system_name, max_ly=60, max_days=market_filter.max_data_age_days, size=100)
                          if market_filter.accepts(x.pad_size, x.distance_to_arrival, x.station_type)][:25]
                 rows = [(x.station_name, x.system_name, f'{x.buy_price:,} cr', f'{x.stock:,}', f'{x.distance:.1f} ly',
                          x.pad_size or '?', _data_age(x.updated_at),
@@ -667,6 +804,12 @@ class TradePanel:
             self.route_status.config(text='TRASA UKOŃCZONA', fg=tce.GREEN)
         else:
             self.route_status.config(text=f'TRASA AKTYWNA — HOP {current}/{len(hops)}', fg=tce.GREEN)
+        if not finished and 1 <= current <= len(hops):
+            hop = hops[current - 1]
+            self.ov_from_system_var.set(hop.source_system)
+            self.ov_from_station_var.set(hop.source_station)
+            self.ov_to_system_var.set(hop.destination_system)
+            self.ov_to_station_var.set(hop.destination_station)
         for i, hop in enumerate(hops, 1):
             self._route_card(i, hop, done=finished or i < current, active=not finished and i == current,
                              steps=steps if not finished and i == current else '')
@@ -699,6 +842,150 @@ class TradePanel:
                      font=f.section, anchor='e').pack(anchor='e')
         tk.Label(side, text=f'+{profit:,} CR', bg=bg, fg=tce.GREEN if not done else fg,
                  font=f.big, anchor='e').pack(anchor='e')
+
+    STATION_KEYS = (('system', 'System'), ('type', 'Typ'), ('economy', 'Ekonomia'), ('government', 'Rząd'),
+                    ('allegiance', 'Frakcja'), ('pad', 'Pad'), ('arrival', 'Od gwiazdy'), ('updated', 'Ceny'))
+
+    def _build_overview_tab(self) -> None:
+        """TRADE OVERVIEW jak w TCE: biezaca stacja | Trade Advisor (biezaca → docelowa) | stacja docelowa."""
+        self.tab_overview = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_overview, text='Porównaj')
+        self.ov_from_system_var = tk.StringVar(value='Sol')
+        self.ov_from_station_var = tk.StringVar(value='Columbus')
+        self.ov_to_system_var = tk.StringVar(value='')
+        self.ov_to_station_var = tk.StringVar(value='')
+        entry = ttk.Frame(self.tab_overview)
+        entry.pack(fill=tk.X, padx=10, pady=(10, 4))
+        for label, var, width in (('Skąd:', self.ov_from_system_var, 16), ('', self.ov_from_station_var, 20),
+                                  ('Dokąd:', self.ov_to_system_var, 16), ('', self.ov_to_station_var, 20)):
+            if label:
+                ttk.Label(entry, text=label).pack(side=tk.LEFT)
+            ttk.Entry(entry, textvariable=var, width=width).pack(side=tk.LEFT, padx=(4, 8))
+        self.ov_btn = ttk.Button(entry, text='Porównaj', command=self.refresh_overview_tab)
+        self.ov_btn.pack(side=tk.LEFT)
+
+        body = tk.Frame(self.tab_overview, bg=tce.BG)
+        body.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
+        body.columnconfigure((0, 2), weight=3, uniform='side')
+        body.columnconfigure(1, weight=4)
+        body.rowconfigure(2, weight=1)
+        self.ov_from_header = tce.SectionHeader(body, 'Bieżąca stacja', self.fonts)
+        self.ov_from_header.grid(row=0, column=0, sticky='ew', padx=(0, 6))
+        self.ov_advisor_header = tce.SectionHeader(body, 'Trade advisor (bieżąca → docelowa)', self.fonts)
+        self.ov_advisor_header.grid(row=0, column=1, sticky='ew', padx=6)
+        self.ov_to_header = tce.SectionHeader(body, 'Stacja docelowa', self.fonts)
+        self.ov_to_header.grid(row=0, column=2, sticky='ew', padx=(6, 0))
+        self.ov_from_info = tce.KeyValueGrid(body, self.STATION_KEYS, self.fonts)
+        self.ov_from_info.grid(row=1, column=0, sticky='new', padx=(0, 6), pady=(4, 6))
+        self.ov_advisor = tce.DataTable(body, [
+            ('name', 'Towar', 150, 'w'), ('buy', 'Kup', 70, 'e'), ('sell', 'Sprzedaj', 75, 'e'),
+            ('profit', 'Zysk/t', 70, 'e'), ('stock', 'Zapas', 65, 'e')], height=8)
+        self.ov_advisor.grid(row=1, column=1, sticky='nsew', padx=6, pady=(4, 6))
+        self.ov_to_info = tce.KeyValueGrid(body, self.STATION_KEYS + (('distance', 'Odległość'),), self.fonts)
+        self.ov_to_info.grid(row=1, column=2, sticky='new', padx=(6, 0), pady=(4, 6))
+        self.ov_exports = tce.DataTable(body, [
+            ('name', 'Eksport (kupisz)', 160, 'w'), ('price', 'Cena', 70, 'e'), ('stock', 'Zapas', 70, 'e')], height=8)
+        self.ov_exports.grid(row=2, column=0, sticky='nsew', padx=(0, 6))
+        self.ov_summary = tk.Label(body, text='', bg=tce.BG, fg=tce.GREEN, font=self.fonts.big, justify=tk.CENTER)
+        self.ov_summary.grid(row=2, column=1, sticky='n', padx=6, pady=(20, 0))
+        self.ov_imports = tce.DataTable(body, [
+            ('name', 'Import (sprzedasz)', 160, 'w'), ('price', 'Cena', 70, 'e'), ('demand', 'Popyt', 70, 'e')], height=8)
+        self.ov_imports.grid(row=2, column=2, sticky='nsew', padx=(6, 0))
+
+    def open_overview(self, to_system: str, to_station: str, from_system: str = '', from_station: str = '') -> None:
+        """Jak PREVIEW w TCE: ustaw stacje docelowa i pokaz porownanie."""
+        ctx = self.context()
+        trade = self.nearby_table.selected_payload()
+        self._ov_distance = trade.distance if trade is not None and trade.sell_station.lower() == to_station.lower() else None
+        self.ov_from_system_var.set(from_system or ctx['system'] or self.nearby_system_var.get())
+        self.ov_from_station_var.set(from_station or ctx['station'] or self.nearby_station_var.get())
+        self.ov_to_system_var.set(to_system)
+        self.ov_to_station_var.set(to_station)
+        self.nav.select_frame(self.tab_overview)
+        self.refresh_overview_tab()
+
+    def refresh_overview_tab(self) -> None:
+        names = [v.get().strip() for v in (self.ov_from_system_var, self.ov_from_station_var,
+                                           self.ov_to_system_var, self.ov_to_station_var)]
+        if not all(names) or str(self.ov_btn['state']) == tk.DISABLED:
+            return
+        self.ov_btn.config(state=tk.DISABLED)
+        self.ov_advisor_header.set('Trade advisor — pobieram oba rynki...', '')
+        threading.Thread(target=self._overview_worker, args=(*names, int(self.context()['capacity'] or 304)),
+                         daemon=True).start()
+
+    def _overview_worker(self, from_system: str, from_station: str, to_system: str, to_station: str,
+                         capacity: int) -> None:
+        result = {'error': ''}
+        try:
+            result['from'] = get_station_market(from_system, from_station)
+            result['to'] = get_station_market(to_system, to_station)
+            result['from_info'] = next((x for x in search_stations(from_system) if x.name.lower() == from_station.lower()), None)
+            result['to_info'] = next((x for x in search_stations(to_system) if x.name.lower() == to_station.lower()), None)
+            result['names'] = load_commodity_names()
+        except Exception as e:
+            result['error'] = str(e)
+        try:
+            self.window.after(0, self._overview_done, result, capacity)
+        except Exception:
+            pass
+
+    def _station_values(self, market, info) -> dict:
+        values = {'system': market.system_name, 'updated': f'{_data_age(market.updated_at)} temu' if market.updated_at else '?'}
+        if info is not None:
+            values.update(type=info.station_type or '?', economy=info.primary_economy or '?',
+                          government=info.government or '?', allegiance=info.allegiance or '?',
+                          pad=info.pad_size or '?', arrival=f'{info.distance_to_arrival:,.0f} ls')
+        return values
+
+    def _overview_done(self, result: dict, capacity: int) -> None:
+        self.ov_btn.config(state=tk.NORMAL)
+        if result['error'] or result['from'].error or result['to'].error:
+            error = result['error'] or result['from'].error or result['to'].error
+            self.ov_advisor_header.set(f'Błąd: {error}', '')
+            return
+        src, dst, names = result['from'], result['to'], result['names']
+        display = lambda n: names.get(n.lower(), n)
+        self.ov_from_header.set(src.station_name, '')
+        self.ov_to_header.set(dst.station_name, '')
+        self.ov_from_info.set(**self._station_values(src, result['from_info']))
+        to_values = self._station_values(dst, result['to_info'])
+        hop = self._hop_to(dst.system_name, dst.station_name)
+        distance = hop.distance if hop is not None and hop.distance else getattr(self, '_ov_distance', None)
+        to_values['distance'] = f'{distance:.1f} ly' if distance else '—'
+        self.ov_to_info.set(**to_values)
+        sell_there = {i.name.lower(): i for i in dst.imports}
+        advice = []
+        for item in src.exports:
+            target = sell_there.get(item.name.lower())
+            if target is not None and target.sell_price > item.buy_price:
+                units = min(capacity, item.stock, target.demand)
+                advice.append((item, target, target.sell_price - item.buy_price, units))
+        advice.sort(key=lambda a: a[2], reverse=True)
+        self.ov_advisor.set_rows(
+            [(display(i.name), f'{i.buy_price:,}', f'{t.sell_price:,}', f'+{p:,}', f'{i.stock:,}') for i, t, p, _u in advice],
+            sort_values=[{'buy': i.buy_price, 'sell': t.sell_price, 'profit': p, 'stock': i.stock} for i, t, p, _u in advice],
+            tags=['good'] * len(advice))
+        self.ov_exports.set_rows([(display(i.name), f'{i.buy_price:,}', f'{i.stock:,}') for i in src.exports],
+                                 sort_values=[{'price': i.buy_price, 'stock': i.stock} for i in src.exports])
+        self.ov_imports.set_rows([(display(i.name), f'{i.sell_price:,}', f'{i.demand:,}') for i in dst.imports],
+                                 sort_values=[{'price': i.sell_price, 'demand': i.demand} for i in dst.imports])
+        if advice:
+            best_item, _t, best_profit, best_units = advice[0]
+            self.ov_advisor_header.set(f'{src.station_name} → {dst.station_name}', f'{len(advice)} towarów')
+            self.ov_summary.config(text=f'NAJLEPIEJ: {display(best_item.name).upper()}\n'
+                                        f'+{best_profit:,} CR/T × {best_units} T\n= {best_profit * best_units:,} CR', fg=tce.GREEN)
+        else:
+            self.ov_advisor_header.set(f'{src.station_name} → {dst.station_name}', 'brak zysku')
+            self.ov_summary.config(text='BRAK ZYSKOWNYCH TOWARÓW\nNA TEJ PARZE STACJI', fg=tce.ORANGE_DIM)
+
+    def _hop_to(self, system: str, station: str):
+        with self._route_lock:
+            route = self._route
+        for hop in (route.hops_list if route is not None and route.hops_list else []):
+            if (hop.destination_system.lower(), hop.destination_station.lower()) == (system.lower(), station.lower()):
+                return hop
+        return None
 
     def _jump_range(self) -> float:
         return float(self.context()['jump_range'] or 30.0)
@@ -770,13 +1057,12 @@ class TradePanel:
             system_name, station_name, capacity, names, error, filter_text = self._nearby_meta
             trades = rank_trades(self._nearby_cands, mode)
             self.nearby_table.set_rows([self._trade_row(t, names, True) for t in trades],
-                                       sort_values=[self._trade_sort(t) for t in trades])
+                                       sort_values=[self._trade_sort(t) for t in trades], payloads=trades)
             hold = f'ładownia {capacity} t' if capacity else 'ładownia 304 t (domyślnie — czekam na Loadout)'
             if error:
                 self.nearby_header.set(f'{station_name} ({system_name}) — błąd: {error}', '')
             elif trades:
-                self.nearby_header.set(f'Kup w {station_name} → sprzedaj w okolicy',
-                                       f'{len(trades)} towarów · {RANK_MODES[mode]} · {hold} · {filter_text}')
+                self.nearby_header.set(f'Kup w {station_name} → sprzedaj w okolicy', f'{len(trades)} towarów')
             else:
                 self.nearby_header.set(f'{station_name}: brak zyskownych okazji w zasięgu', f'{hold} · {filter_text}')
         self._render_cargo()
@@ -826,7 +1112,7 @@ class TradePanel:
         reference, cargo, names, error = self._cargo_meta
         trades = rank_trades(self._cargo_cands, self.nearby_mode_var.get())
         self.nearby_cargo_table.set_rows([self._trade_row(t, names, False) for t in trades],
-                                         sort_values=[self._trade_sort(t) for t in trades])
+                                         sort_values=[self._trade_sort(t) for t in trades], payloads=trades)
         total = sum(t.total_profit for t in trades)
         unsold = len(cargo) - len(trades)
         right = f'razem {total:,} cr' + (f' · {unsold} bez kupca w zasięgu' if unsold else '')
@@ -1030,6 +1316,14 @@ class TradePanel:
         except ValueError:
             self.settings_status_var.set('Błąd: odległość od gwiazdy musi być liczbą ≥ 0.')
             return
+        try:
+            min_profit = int(float(self.min_profit_var.get().strip()))
+            max_age = int(float(self.max_age_var.get().strip()))
+            if min_profit < 0 or max_age < 1:
+                raise ValueError
+        except ValueError:
+            self.settings_status_var.set('Błąd: min. zysk ≥ 0, wiek cen ≥ 1 dzień (liczby).')
+            return
         pad_filter = next((k for k, v in PAD_FILTER_LABELS.items() if v == self.pad_filter_var.get()), 'auto')
         market_type = next((k for k, v in MARKET_TYPE_LABELS.items() if v == self.market_type_var.get()), 'all')
 
@@ -1047,6 +1341,8 @@ class TradePanel:
             'pad_filter': pad_filter,
             'max_star_distance_ls': max_star,
             'market_type': market_type,
+            'min_profit_per_t': min_profit,
+            'max_data_age_days': max_age,
         })
 
         # Zapisz do pliku

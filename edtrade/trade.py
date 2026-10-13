@@ -525,7 +525,8 @@ def candidate_trades(commodity: str, reference_system: str, units: int, buy_pric
                      max_ly: float = 40.0, exclude_market: str = "", jump_range: float = 30.0) -> list[NearbyTrade]:
     """Wszyscy opłacalni kupcy w zasięgu (po filtrze) — wybór najlepszego zależy od trybu rankingu."""
     trades = []
-    for b in find_mineral_buyers(commodity, reference_system, max_ly=max_ly, min_demand=1, size=100):
+    for b in find_mineral_buyers(commodity, reference_system, max_ly=max_ly, min_demand=1,
+                                 max_days=market_filter.max_data_age_days, size=100):
         if not market_filter.accepts(b.pad_size, b.distance_to_arrival, b.station_type):
             continue
         if exclude_market and b.station_name.lower() == exclude_market.lower() and b.system_name.lower() == reference_system.lower():
@@ -535,7 +536,9 @@ def candidate_trades(commodity: str, reference_system: str, units: int, buy_pric
                             demand=b.demand, distance=b.distance, distance_to_arrival=b.distance_to_arrival,
                             pad_size=b.pad_size, station_type=b.station_type, updated_at=b.updated_at,
                             travel_s=travel_seconds(b.distance, b.distance_to_arrival, jump_range))
-        if trade.profit_per_unit > 0 and trade.units > 0:
+        # Ładunek w ładowni (buy_price 0) — liczy się każda sprzedaż; zakup tutaj — co najmniej min. zysk/t
+        min_profit = market_filter.min_profit_per_t if buy_price else 1
+        if trade.profit_per_unit >= max(1, min_profit) and trade.units > 0:
             trades.append(trade)
     return trades
 

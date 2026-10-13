@@ -16,6 +16,8 @@ class MarketFilter:
     min_pad: str = "medium"         # small / medium / large
     max_star_ls: float = 5000.0     # 0 = bez limitu
     market_type: str = "all"        # all / space / planetary
+    min_profit_per_t: int = 500     # jak "Market minimum profit/unit" w TCE
+    max_data_age_days: int = 7      # starsze ceny Ardent pomijamy
 
     @property
     def requires_large_pad(self) -> bool:
@@ -45,6 +47,9 @@ class MarketFilter:
         parts.append(f"≤{self.max_star_ls:,.0f} ls" if self.max_star_ls else "bez limitu ls")
         if self.market_type != "all":
             parts.append("kosmos" if self.market_type == "space" else "planetarne")
+        if self.min_profit_per_t:
+            parts.append(f"≥{self.min_profit_per_t:,} cr/t")
+        parts.append(f"dane ≤{self.max_data_age_days} d")
         return " · ".join(parts)
 
 
@@ -61,5 +66,14 @@ def filter_from_config(config: dict, ship_large_pad: bool) -> MarketFilter:
     except (TypeError, ValueError):
         max_ls = 5000.0
     market_type = config.get("market_type", "all")
+    try:
+        min_profit = max(0, int(float(config.get("min_profit_per_t", 500))))
+    except (TypeError, ValueError):
+        min_profit = 500
+    try:
+        max_age = max(1, int(float(config.get("max_data_age_days", 7))))
+    except (TypeError, ValueError):
+        max_age = 7
     return MarketFilter(min_pad=min_pad, max_star_ls=max_ls,
-                        market_type=market_type if market_type in MARKET_TYPES else "all")
+                        market_type=market_type if market_type in MARKET_TYPES else "all",
+                        min_profit_per_t=min_profit, max_data_age_days=max_age)

@@ -74,17 +74,25 @@ class TestRankModes(unittest.TestCase):
 
     def _pick(self, mode):
         with mock.patch.object(trade, "find_mineral_buyers", return_value=self.buyers):
-            return trade.best_buyer("gold", "C", 304, 1000, MarketFilter(min_pad="large"), mode=mode).sell_station
+            return trade.best_buyer("gold", "C", 304, 1000, MarketFilter(min_pad="large", min_profit_per_t=0),
+                                    mode=mode).sell_station
 
     def test_modes(self):
         self.assertEqual(self._pick("total"), "Daleko Drogo")
         self.assertEqual(self._pick("per_hour"), "Szybko")
         self.assertEqual(self._pick("time"), "Za Rogiem")
 
+    def test_min_profit_per_t(self):
+        with mock.patch.object(trade, "find_mineral_buyers", return_value=self.buyers):
+            names = [t.sell_station for t in trade.candidate_trades("gold", "C", 304, 1000, MarketFilter())]
+            cargo = [t.sell_station for t in trade.candidate_trades("gold", "C", 304, 0, MarketFilter())]
+        self.assertNotIn("Za Rogiem", names)        # +100 cr/t < 500 cr/t (domyślny próg)
+        self.assertIn("Za Rogiem", cargo)           # ładunek już w ładowni — każda sprzedaż się liczy
+
     def test_rank_trades_one_row_per_commodity(self):
         with mock.patch.object(trade, "find_mineral_buyers", return_value=self.buyers):
-            cands = [trade.candidate_trades("gold", "C", 304, 1000, MarketFilter()),
-                     trade.candidate_trades("silver", "C", 10, 2900, MarketFilter())]
+            cands = [trade.candidate_trades("gold", "C", 304, 1000, MarketFilter(min_profit_per_t=0)),
+                     trade.candidate_trades("silver", "C", 10, 2900, MarketFilter(min_profit_per_t=0))]
         ranked = trade.rank_trades(cands, "total")
         self.assertEqual([t.commodity for t in ranked], ["gold", "silver"])
 
