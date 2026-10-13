@@ -18,7 +18,7 @@ from .filters import filter_from_config
 from datetime import datetime, timezone
 from .trade import (get_system_info, search_stations, find_material_traders, find_mining_hotspots, find_mineral_buyers,
                     find_commodity_sellers, get_station_market, StationMarket, JourneyPlan, TradeEngine,
-                    nearby_trades_from_market, best_sales_for_cargo)
+                    nearby_candidates_from_market, cargo_candidates, rank_trades, RANK_MODES)
 
 COMMODITY_MODES = ('Kup', 'Sprzedaj')
 PAD_FILTER_LABELS = {'auto': 'Automatycznie (ze statku)', 'large': 'Tylko pad L', 'all': 'Wszystkie pady'}
@@ -109,6 +109,11 @@ class TradePanel:
         self.nearby_station_var = tk.StringVar(value='Columbus')
         self.nearby_range_var = tk.StringVar(value='40')
         self._cargo_busy = False
+        self._nearby_cands: list = []
+        self._nearby_meta: Optional[tuple] = None
+        self._cargo_cands: list = []
+        self._cargo_meta: Optional[tuple] = None
+        self.nearby_mode_var = tk.StringVar(value='per_hour')
         nearby_entry = ttk.Frame(self.tab_nearby)
         nearby_entry.pack(fill=tk.X, padx=10, pady=(10, 4))
         for label, var, width in (('System:', self.nearby_system_var, 18), ('Stacja:', self.nearby_station_var, 22),
@@ -117,6 +122,9 @@ class TradePanel:
             ttk.Entry(nearby_entry, textvariable=var, width=width).pack(side=tk.LEFT, padx=(4, 10))
         self.nearby_btn = ttk.Button(nearby_entry, text='Szukaj', command=self.refresh_nearby_tab)
         self.nearby_btn.pack(side=tk.LEFT)
+        self.nearby_modes = tce.SegmentedButtons(self.tab_nearby, list(RANK_MODES.items()), self.fonts,
+                                                 command=lambda _m: self._render_nearby(), variable=self.nearby_mode_var)
+        self.nearby_modes.pack(fill=tk.X, padx=10, pady=(4, 2))
         self.nearby_header = tce.SectionHeader(self.tab_nearby, 'Kup tutaj → sprzedaj w okolicy', self.fonts)
         self.nearby_header.pack(fill=tk.X, padx=10, pady=(6, 2))
         trade_columns = [('commodity', 'Towar', 160, 'w'), ('buy', 'Kup', 70, 'e'), ('station', 'Sprzedaj w', 170, 'w'),
@@ -732,35 +740,46 @@ class TradePanel:
 
     def _nearby_worker(self, system_name: str, station_name: str, max_ly: float, capacity: int, market_filter,
                        jump_range: float) -> None:
-        trades, error, names = [], '', {}
+        cands, error, names = [], '', {}
         try:
             market = get_station_market(system_name, station_name)
             if market.error:
                 error = market.error
             else:
-                trades = nearby_trades_from_market(market, capacity or 304, market_filter, max_ly, jump_range=jump_range)
+                cands = nearby_candidates_from_market(market, capacity or 304, market_filter, max_ly, jump_range=jump_range)
             names = load_commodity_names()
         except Exception as e:
             error = str(e)
         try:
-            self.window.after(0, self._nearby_done, system_name, station_name, capacity, trades, names, error,
+            self.window.after(0, self._nearby_done, system_name, station_name, capacity, cands, names, error,
                               market_filter.describe())
         except Exception:
             pass
 
-    def _nearby_done(self, system_name: str, station_name: str, capacity: int, trades: list, names: dict, error: str,
+    def _nearby_done(self, system_name: str, station_name: str, capacity: int, cands: list, names: dict, error: str,
                      filter_text: str) -> None:
-        self.nearby_table.set_rows([self._trade_row(t, names, True) for t in trades],
-                                   sort_values=[self._trade_sort(t) for t in trades])
-        hold = f'ładownia {capacity} t' if capacity else 'ładownia 304 t (domyślnie — czekam na Loadout)'
-        if error:
-            self.nearby_header.set(f'{station_name} ({system_name}) — błąd: {error}', '')
-        elif trades:
-            self.nearby_header.set(f'Kup w {station_name} → sprzedaj w okolicy',
-                                   f'{len(trades)} okazji · najlepsze cr/h · {hold} · {filter_text}')
-        else:
-            self.nearby_header.set(f'{station_name}: brak zyskownych okazji w zasięgu', f'{hold} · {filter_text}')
+        self._nearby_cands = cands
+        self._nearby_meta = (system_name, station_name, capacity, names, error, filter_text)
+        self._render_nearby()
         self.nearby_btn.config(state=tk.NORMAL)
+
+    def _render_nearby(self) -> None:
+        """Ranking wg wybranego trybu — z zapamietanych kandydatow, bez sieci (przelaczanie natychmiastowe)."""
+        mode = self.nearby_mode_var.get()
+        if self._nearby_meta is not None:
+            system_name, station_name, capacity, names, error, filter_text = self._nearby_meta
+            trades = rank_trades(self._nearby_cands, mode)
+            self.nearby_table.set_rows([self._trade_row(t, names, True) for t in trades],
+                                       sort_values=[self._trade_sort(t) for t in trades])
+            hold = f'ładownia {capacity} t' if capacity else 'ładownia 304 t (domyślnie — czekam na Loadout)'
+            if error:
+                self.nearby_header.set(f'{station_name} ({system_name}) — błąd: {error}', '')
+            elif trades:
+                self.nearby_header.set(f'Kup w {station_name} → sprzedaj w okolicy',
+                                       f'{len(trades)} towarów · {RANK_MODES[mode]} · {hold} · {filter_text}')
+            else:
+                self.nearby_header.set(f'{station_name}: brak zyskownych okazji w zasięgu', f'{hold} · {filter_text}')
+        self._render_cargo()
 
     def refresh_cargo_sales(self) -> None:
         """Gdzie sprzedac to, co jest w ladowni (z journala) — wzgledem biezacego systemu."""
@@ -784,19 +803,28 @@ class TradePanel:
                          args=(cargo, reference, max_ly, self._market_filter(), self._jump_range())).start()
 
     def _cargo_worker(self, cargo: list, reference: str, max_ly: float, market_filter, jump_range: float) -> None:
-        trades, error, names = [], '', {}
+        cands, error, names = [], '', {}
         try:
-            trades = best_sales_for_cargo(cargo, reference, market_filter, max_ly, jump_range=jump_range)
+            cands = cargo_candidates(cargo, reference, market_filter, max_ly, jump_range=jump_range)
             names = load_commodity_names()
         except Exception as e:
             error = str(e)
         try:
-            self.window.after(0, self._cargo_done, reference, cargo, trades, names, error)
+            self.window.after(0, self._cargo_done, reference, cargo, cands, names, error)
         except Exception:
             pass
 
-    def _cargo_done(self, reference: str, cargo: list, trades: list, names: dict, error: str) -> None:
+    def _cargo_done(self, reference: str, cargo: list, cands: list, names: dict, error: str) -> None:
         self._cargo_busy = False
+        self._cargo_cands = cands
+        self._cargo_meta = (reference, cargo, names, error)
+        self._render_cargo()
+
+    def _render_cargo(self) -> None:
+        if self._cargo_meta is None:
+            return
+        reference, cargo, names, error = self._cargo_meta
+        trades = rank_trades(self._cargo_cands, self.nearby_mode_var.get())
         self.nearby_cargo_table.set_rows([self._trade_row(t, names, False) for t in trades],
                                          sort_values=[self._trade_sort(t) for t in trades])
         total = sum(t.total_profit for t in trades)

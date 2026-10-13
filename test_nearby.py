@@ -56,10 +56,37 @@ class TestRanking(unittest.TestCase):
     def test_cargo_skips_limpets_and_mission_cargo(self):
         seen = []
         with mock.patch.object(trade, "_ardent_commodity_names", return_value=[]), \
-                mock.patch.object(trade, "best_buyer", side_effect=lambda name, *a, **k: seen.append(name)):
+                mock.patch.object(trade, "candidate_trades", side_effect=lambda name, *a, **k: seen.append(name) or []):
             trade.best_sales_for_cargo([{"Name": "drones", "Count": 10}, {"Name": "gold", "Count": 5, "MissionID": 1},
                                         {"Name": "nonlethalweapons", "Count": 246}], "NN 3009", MarketFilter())
         self.assertEqual(seen, ["nonlethalweapons"])
+
+
+class TestRankModes(unittest.TestCase):
+    """Każdy tryb wybiera innego kupca tego samego towaru (304 t, zakup po 1000 cr, zasięg 30 ly)."""
+
+    def setUp(self):
+        self.buyers = [
+            MineralBuyer("Daleko Drogo", "A", 5000, 3000, "large", 90.0, 5000, "", "Coriolis"),  # max zysk, długi lot
+            MineralBuyer("Szybko", "B", 5000, 2600, "large", 20.0, 10, "", "Coriolis"),         # najlepsze cr/h
+            MineralBuyer("Za Rogiem", "C", 5000, 1100, "large", 0.0, 50, "", "Coriolis"),       # najkrótszy lot
+        ]
+
+    def _pick(self, mode):
+        with mock.patch.object(trade, "find_mineral_buyers", return_value=self.buyers):
+            return trade.best_buyer("gold", "C", 304, 1000, MarketFilter(min_pad="large"), mode=mode).sell_station
+
+    def test_modes(self):
+        self.assertEqual(self._pick("total"), "Daleko Drogo")
+        self.assertEqual(self._pick("per_hour"), "Szybko")
+        self.assertEqual(self._pick("time"), "Za Rogiem")
+
+    def test_rank_trades_one_row_per_commodity(self):
+        with mock.patch.object(trade, "find_mineral_buyers", return_value=self.buyers):
+            cands = [trade.candidate_trades("gold", "C", 304, 1000, MarketFilter()),
+                     trade.candidate_trades("silver", "C", 10, 2900, MarketFilter())]
+        ranked = trade.rank_trades(cands, "total")
+        self.assertEqual([t.commodity for t in ranked], ["gold", "silver"])
 
 
 class TestCargoEvent(unittest.TestCase):

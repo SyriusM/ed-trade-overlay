@@ -505,10 +505,26 @@ class NearbyTrade:
         return self.total_profit * 3600 / self.travel_s if self.travel_s else 0.0
 
 
-def best_buyer(commodity: str, reference_system: str, units: int, buy_price: int, market_filter,
-               max_ly: float = 40.0, exclude_market: str = "", jump_range: float = 30.0) -> Optional[NearbyTrade]:
-    """Kupiec w zasięgu z najlepszym zyskiem na godzinę (zysk za realnie sprzedawalną ilość / czas lotu)."""
-    best: Optional[NearbyTrade] = None
+# Tryby rankingu handlu w okolicy (jak sortowanie zysku w Trade Advisor TCE + "czas to pieniądz")
+RANK_MODES = {
+    "total": "Największy zysk",
+    "per_hour": "Najszybszy zysk (cr/h)",
+    "time": "Najkrótsza droga",
+}
+
+
+def _rank_key(mode: str):
+    if mode == "total":
+        return lambda t: (t.total_profit, -t.travel_s)
+    if mode == "time":
+        return lambda t: (-t.travel_s, t.total_profit)
+    return lambda t: (t.profit_per_hour, t.total_profit)
+
+
+def candidate_trades(commodity: str, reference_system: str, units: int, buy_price: int, market_filter,
+                     max_ly: float = 40.0, exclude_market: str = "", jump_range: float = 30.0) -> list[NearbyTrade]:
+    """Wszyscy opłacalni kupcy w zasięgu (po filtrze) — wybór najlepszego zależy od trybu rankingu."""
+    trades = []
     for b in find_mineral_buyers(commodity, reference_system, max_ly=max_ly, min_demand=1, size=100):
         if not market_filter.accepts(b.pad_size, b.distance_to_arrival, b.station_type):
             continue
@@ -519,9 +535,27 @@ def best_buyer(commodity: str, reference_system: str, units: int, buy_price: int
                             demand=b.demand, distance=b.distance, distance_to_arrival=b.distance_to_arrival,
                             pad_size=b.pad_size, station_type=b.station_type, updated_at=b.updated_at,
                             travel_s=travel_seconds(b.distance, b.distance_to_arrival, jump_range))
-        if trade.profit_per_unit > 0 and (best is None or trade.profit_per_hour > best.profit_per_hour):
-            best = trade
+        if trade.profit_per_unit > 0 and trade.units > 0:
+            trades.append(trade)
+    return trades
+
+
+def pick_best(candidates: list[NearbyTrade], mode: str = "per_hour") -> Optional[NearbyTrade]:
+    return max(candidates, key=_rank_key(mode)) if candidates else None
+
+
+def rank_trades(candidates_per_commodity: list[list[NearbyTrade]], mode: str = "per_hour") -> list[NearbyTrade]:
+    """Jeden wiersz na towar (najlepszy kupiec w danym trybie), posortowane wg trybu."""
+    best = [b for b in (pick_best(c, mode) for c in candidates_per_commodity) if b is not None]
+    best.sort(key=_rank_key(mode), reverse=True)
     return best
+
+
+def best_buyer(commodity: str, reference_system: str, units: int, buy_price: int, market_filter,
+               max_ly: float = 40.0, exclude_market: str = "", jump_range: float = 30.0,
+               mode: str = "per_hour") -> Optional[NearbyTrade]:
+    return pick_best(candidate_trades(commodity, reference_system, units, buy_price, market_filter, max_ly,
+                                      exclude_market, jump_range), mode)
 
 
 JUMP_SECONDS = 50.0      # ładowanie FSD + skok + wyjście z hiperprzestrzeni
@@ -539,40 +573,47 @@ def travel_seconds(distance_ly: float, distance_to_arrival_ls: float, jump_range
     return JUMP_SECONDS * jumps + supercruise_seconds(distance_to_arrival_ls) + DOCKING_SECONDS
 
 
-def _parallel_best(jobs: list[dict], reference_system: str, market_filter, max_ly: float,
-                   exclude_market: str = "", workers: int = 6, jump_range: float = 30.0) -> list[NearbyTrade]:
+def _parallel_candidates(jobs: list[dict], reference_system: str, market_filter, max_ly: float,
+                         exclude_market: str = "", workers: int = 6, jump_range: float = 30.0) -> list[list[NearbyTrade]]:
     from concurrent.futures import ThreadPoolExecutor
     _ardent_commodity_names()  # wspólna lista nazw — pobrana raz, zanim ruszą wątki
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        results = pool.map(lambda j: best_buyer(j["name"], reference_system, j["units"], j["buy_price"],
-                                                market_filter, max_ly, exclude_market, jump_range), jobs)
-        trades = []
-        for job, trade in zip(jobs, results):
-            if trade is not None:
-                trade.stock = job.get("stock", 0)
-                trades.append(trade)
-    trades.sort(key=lambda t: t.profit_per_hour, reverse=True)
-    return trades
+        results = list(pool.map(lambda j: candidate_trades(j["name"], reference_system, j["units"], j["buy_price"],
+                                                           market_filter, max_ly, exclude_market, jump_range), jobs))
+    for job, cands in zip(jobs, results):
+        for trade in cands:
+            trade.stock = job.get("stock", 0)
+    return [c for c in results if c]
 
 
-def nearby_trades_from_market(market: "StationMarket", capacity: int, market_filter, max_ly: float = 40.0,
-                              workers: int = 6, jump_range: float = 30.0) -> list[NearbyTrade]:
-    """Trade Advisor: każdy towar eksportowany tutaj → najlepszy kupiec w okolicy, zysk za pełną ładownię."""
+def nearby_candidates_from_market(market: "StationMarket", capacity: int, market_filter, max_ly: float = 40.0,
+                                  workers: int = 6, jump_range: float = 30.0) -> list[list[NearbyTrade]]:
+    """Trade Advisor: dla każdego towaru eksportowanego tutaj — wszyscy opłacalni kupcy w okolicy (pełna ładownia)."""
     jobs = [{"name": i.name, "units": min(capacity, i.stock), "buy_price": i.buy_price, "stock": i.stock}
             for i in market.exports if i.stock > 0 and i.buy_price > 0]
-    trades = _parallel_best(jobs, market.system_name, market_filter, max_ly, market.station_name, workers, jump_range)
-    logger.info("nearby_trades_from_market: %s/%s — %d okazji z %d towarów",
-                market.system_name, market.station_name, len(trades), len(jobs))
-    return trades
+    cands = _parallel_candidates(jobs, market.system_name, market_filter, max_ly, market.station_name, workers, jump_range)
+    logger.info("nearby_candidates_from_market: %s/%s — %d towarów z kupcem z %d",
+                market.system_name, market.station_name, len(cands), len(jobs))
+    return cands
 
 
-def best_sales_for_cargo(cargo: list[dict], reference_system: str, market_filter, max_ly: float = 40.0,
-                         workers: int = 6, jump_range: float = 30.0) -> list[NearbyTrade]:
-    """Ładunek z journala (Cargo: Name = symbol, Count) → gdzie sprzedać najkorzystniej."""
+def cargo_candidates(cargo: list[dict], reference_system: str, market_filter, max_ly: float = 40.0,
+                     workers: int = 6, jump_range: float = 30.0) -> list[list[NearbyTrade]]:
+    """Ładunek z journala (Cargo: Name = symbol, Count) → kupcy w okolicy; pomija limpety i ładunek misyjny."""
     jobs = [{"name": c.get("Name", ""), "units": int(c.get("Count") or 0), "buy_price": 0, "stock": int(c.get("Count") or 0)}
             for c in cargo if c.get("Name") and int(c.get("Count") or 0) > 0 and c.get("Name", "").lower() != "drones"
             and not c.get("MissionID")]
-    return _parallel_best(jobs, reference_system, market_filter, max_ly, workers=workers, jump_range=jump_range)
+    return _parallel_candidates(jobs, reference_system, market_filter, max_ly, workers=workers, jump_range=jump_range)
+
+
+def nearby_trades_from_market(market: "StationMarket", capacity: int, market_filter, max_ly: float = 40.0,
+                              workers: int = 6, jump_range: float = 30.0, mode: str = "per_hour") -> list[NearbyTrade]:
+    return rank_trades(nearby_candidates_from_market(market, capacity, market_filter, max_ly, workers, jump_range), mode)
+
+
+def best_sales_for_cargo(cargo: list[dict], reference_system: str, market_filter, max_ly: float = 40.0,
+                         workers: int = 6, jump_range: float = 30.0, mode: str = "per_hour") -> list[NearbyTrade]:
+    return rank_trades(cargo_candidates(cargo, reference_system, market_filter, max_ly, workers, jump_range), mode)
 
 
 SERVICE_FIELDS = (
