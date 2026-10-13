@@ -176,6 +176,12 @@ class TitleBar(tk.Frame):
     def set_title(self, title: str) -> None:
         self.title.configure(text=title.upper())
 
+    def add_tab(self, text: str, fonts: Fonts, command: Callable[[], None]) -> tk.Label:
+        """Dodatkowa zakładka po prawej, obok [HIDE] (np. [REFRESH])."""
+        tab = _tab(self, text, fonts, command=command)
+        tab.pack(side=tk.RIGHT, padx=(0, 4), before=self.title)
+        return tab
+
 
 class SectionHeader(tk.Frame):
     """Biały nagłówek sekcji z pomarańczową linią pod spodem (np. "TRADE ROUTE LISTING")."""

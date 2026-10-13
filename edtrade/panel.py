@@ -128,6 +128,10 @@ class TradePanel:
         self.title_bar = tce.TitleBar(self.window, 'Trasa', self.fonts,
                                       on_control=self._open_settings, on_hide=self.window.iconify)
         self.title_bar.pack(fill=tk.X)
+        # [REFRESH]: main.py podpina on_refresh — ponowne pobranie rynku i trasy bez restartu aplikacji
+        self.on_refresh: Optional[Callable[[], None]] = None
+        self._refreshing = False
+        self.refresh_tab = self.title_bar.add_tab('REFRESH', self.fonts, command=self._refresh_clicked)
         self._context_lock = threading.Lock()
         self._context: dict = {'system': '', 'station': '', 'ship': '', 'capacity': 0, 'jump_range': 0.0,
                                'ship_large_pad': False, 'cargo': [], 'live_market': None}
@@ -782,6 +786,29 @@ class TradePanel:
 
     def _open_settings(self) -> None:
         self.nav.select_frame(self.tab_settings)
+
+    def _refresh_clicked(self) -> None:
+        """[REFRESH] w wątku Tk: bez aplikacji (on_refresh) odśwież tylko rynek i okolicę z pól zakładek."""
+        if self._refreshing:
+            return
+        if self.on_refresh is None:
+            self.refresh_market_tab()
+            self.refresh_nearby_tab()
+            return
+        self._refreshing = True
+        self.refresh_tab.config(text='REFRESH…', bg=tce.ORANGE_DIM)
+        self.on_refresh()
+
+    def refresh_finished(self) -> None:
+        """Wołane z dowolnego wątku po zakończeniu odświeżania — odblokuj [REFRESH]."""
+        try:
+            self.window.after(0, self._refresh_finished_inner)
+        except Exception:
+            pass
+
+    def _refresh_finished_inner(self) -> None:
+        self._refreshing = False
+        self.refresh_tab.config(text='REFRESH', bg=tce.ORANGE)
 
     def refresh_system_tab(self) -> None:
         """Waliduj w watku Tk i pobierz stacje systemu w watku roboczym (UI nie zamarza)."""
