@@ -148,6 +148,8 @@ class EDTradeOverlayApp:
         self._last_capacity = 0.
         self._last_active_class: Optional[str] = None
         self._bar_visible: bool = True
+        self._focus_warned = False
+        self._hidden_bars: list = []
         self.checklist: Optional[RouteChecklist] = None
         self._commodity_names: dict[str, str] = {}
         self._cargo: list[dict] = []
@@ -396,21 +398,21 @@ class EDTradeOverlayApp:
             return
         if not self.user_config.get('bar_only_when_game_focused', False):
             if not self._bar_visible:
-                self.overlay.master.deiconify()
+                self._set_bars_visible(True)
                 self._bar_visible = True
                 logger.info("Pasek: przywrócony (tryb 'tylko przy grze' wyłączony)")
             return
         if window_class is None:
+            if not self._focus_warned:
+                logger.warning("Pasek tylko przy grze: nie da się odczytać aktywnego okna (kdotool) — pasek zostaje widoczny")
+                self._focus_warned = True
             return
         game_class = self.user_config.get('game_window_class', '')
         want_visible = bool(game_class) and window_class == game_class
         if want_visible == self._bar_visible:
             return
         self._bar_visible = want_visible
-        if want_visible:
-            self.overlay.master.deiconify()
-        else:
-            self.overlay.master.withdraw()
+        self._set_bars_visible(want_visible)
         logger.info("Pasek: %s (aktywne okno: %r)", "pokazany" if want_visible else "ukryty", window_class)
 
     def _poll_active_window(self) -> None:
@@ -427,6 +429,22 @@ class EDTradeOverlayApp:
         finally:
             if self.overlay is not None:
                 self.overlay.master.after(1000, self._poll_active_window)
+
+    def _set_bars_visible(self, visible: bool) -> None:
+        """Pokaż/ukryj pasek i każde inne okno-nakładkę (Toplevel z overrideredirect, np. dolny pasek); panel zostaje.
+
+        Przy chowaniu zapamiętuje, co było widoczne, i tylko to przywraca — zamknięte wysuwane okna nie wyskoczą."""
+        if visible:
+            for bar in self._hidden_bars:
+                if bar.winfo_exists():
+                    bar.deiconify()
+            self._hidden_bars = []
+            return
+        root = self.overlay.master
+        bars = [root] + [w for w in root.winfo_children() if hasattr(w, 'overrideredirect') and w.overrideredirect()]
+        self._hidden_bars = [bar for bar in bars if bar.state() == 'normal']
+        for bar in self._hidden_bars:
+            bar.withdraw()
 
     def run(self):
         """Uruchom aplikację."""
