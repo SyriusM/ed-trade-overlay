@@ -152,3 +152,19 @@ class TestLiveMarket(unittest.TestCase):
         self.assertEqual([i.name for i in m.exports], ["gold"])        # nieznane id pominięte
         self.assertEqual([i.name for i in m.imports], ["platinum"])    # popyt 1 przy eksporcie (gold) to nie popyt
         self.assertEqual(m.exports[0].buy_price, 45000)
+
+
+def test_buyer_cache_skips_network_on_repeat_and_ignores_empty():
+    from unittest import mock
+    trade.clear_buyer_cache()
+    try:
+        with mock.patch.object(trade, "_find_mineral_buyers_uncached", return_value=[trade.MineralBuyer()]) as net:
+            trade.find_mineral_buyers("Gold", "Sol", 40, 1, 7, 100)
+            trade.find_mineral_buyers("gold", "SOL", 40, 1, 7, 100)
+            assert net.call_count == 1
+        with mock.patch.object(trade, "_find_mineral_buyers_uncached", return_value=[]) as net:
+            trade.find_mineral_buyers("Silver", "Sol")
+            trade.find_mineral_buyers("Silver", "Sol")
+            assert net.call_count == 2  # puste (może błąd sieci) — bez zapamiętania
+    finally:
+        trade.clear_buyer_cache()

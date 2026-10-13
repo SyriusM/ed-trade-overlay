@@ -9,6 +9,7 @@ import logging
 import math
 import re
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -269,7 +270,42 @@ def find_mining_hotspots(
 PAD_SIZE_MAP = {1: "small", 2: "medium", 3: "large"}
 
 
+BUYER_CACHE_TTL_S = 600  # 10 min — ceny w Ardent i tak zmieniają się wolniej; przełączanie stron bez sieci
+_buyer_cache: dict[tuple, tuple[float, list]] = {}
+_buyer_cache_lock = threading.Lock()
+
+
+def clear_buyer_cache() -> None:
+    with _buyer_cache_lock:
+        _buyer_cache.clear()
+
+
 def find_mineral_buyers(
+    mineral: str,
+    reference_system: str,
+    max_ly: float = 60.0,
+    min_demand: int = 100,
+    max_days: int = 7,
+    size: int = 10,
+) -> list["MineralBuyer"]:
+    """Kupcy towaru w okolicy (Ardent /imports) z pamięcią podręczną na 10 min.
+
+    Puste wyniki nie są zapamiętywane (mogą być błędem sieci — następne wywołanie spróbuje znowu).
+    """
+    key = (mineral.lower(), reference_system.lower(), float(max_ly), int(min_demand), int(max_days), int(size))
+    now = time.time()
+    with _buyer_cache_lock:
+        hit = _buyer_cache.get(key)
+        if hit is not None and now - hit[0] < BUYER_CACHE_TTL_S:
+            return list(hit[1])
+    buyers = _find_mineral_buyers_uncached(mineral, reference_system, max_ly, min_demand, max_days, size)
+    if buyers:
+        with _buyer_cache_lock:
+            _buyer_cache[key] = (now, list(buyers))
+    return buyers
+
+
+def _find_mineral_buyers_uncached(
     mineral: str,
     reference_system: str,
     max_ly: float = 60.0,
