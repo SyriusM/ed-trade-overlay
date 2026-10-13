@@ -66,6 +66,7 @@ class TradeOverlay:
         self._pages: list[tuple[str, 'Callable[[], str]']] = []
         self._page_index: int = 0
         self._system_info_text: str = ''
+        self._copied_system: str = ''  # system w schowku (auto-kopiowanie celu trasy)
 
     def _setup_window(self):
         """Configure X11 window: semi-transparent, always-on-top, no decorations.
@@ -271,13 +272,15 @@ class TradeOverlay:
         sell_age = age_hours(current.dst_updated_at) if current is not None else None
         if sell_age is not None:
             meta.append("CENY " + (f"{sell_age:.0f}H" if sell_age < 48 else f"{sell_age / 24:.0f}D"))
-        if current is not None:
-            # Werdykt etapu: trasa ze Spansh jest zyskowo najlepsza — o OPTIMAL/RISKY decyduje pewność cen celu
+        if sell_age is not None:
+            # Werdykt etapu (tylko gdy znamy wiek cen celu — bez niego nie zgadujemy): trasa ze Spansh jest zyskowo najlepsza — o OPTIMAL/RISKY decyduje pewność cen celu
             verdict, shade = assess.assess_route_hop(sell_age)
             meta.insert(0, assess.badge_for(verdict, shade))
             meta_color = tce.verdict_color(verdict, shade)
         if getattr(route, '_scoopable', False):
             meta.append("⛽")
+        if self._copied_system and self._copied_system.lower() == (display_dest_system or "").lower():
+            meta.append("✓ W SCHOWKU")
 
         # Cargo awareness — ostrzeżenie jeśli w ładowni jest coś innego niż towar hopu
         cargo_warning = ""
@@ -346,6 +349,11 @@ class TradeOverlay:
             except Exception:
                 logger.exception('Błąd rotacji strony %s', name)
         self.master.after(8000, self._rotate_pages)
+
+    def mark_copied(self, system: str) -> None:
+        """Wołane w wątku Tk: cel trasy jest w schowku — pasek pokaże "✓ W SCHOWKU" przy celu."""
+        self._copied_system = system
+        self._refresh_now()
 
     def _refresh_now(self):
         """Wymuś natychmiastowe odświeżenie (inkrementacja hopa itp.)."""

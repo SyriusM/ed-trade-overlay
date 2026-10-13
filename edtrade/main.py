@@ -160,6 +160,7 @@ class EDTradeOverlayApp:
         self._cargo: list[dict] = []
         self._ship_large_pad = False
         self.session = SessionLedger()
+        self._copied_system = ""
 
         # Podłącz callback pollingu do overlaya
         if self.overlay:
@@ -250,6 +251,35 @@ class EDTradeOverlayApp:
             self.overlay.update_route(route)
         if self.panel is not None:
             self.panel.show_route(route)
+        self._copied_system = ""  # nowa trasa → skopiuj cel nawet, jeśli to ten sam system
+        self._copy_target(route)
+
+    def _current_target(self, route) -> str:
+        """System, do którego trzeba teraz lecieć: cel bieżącego hopu (checklista), inaczej cel trasy."""
+        if route is None or route.error:
+            return ""
+        if self.checklist is not None and self.checklist.route is route:
+            return "" if self.checklist.finished else self.checklist.hop.destination_system
+        return route.destination_system
+
+    def _copy_target(self, route) -> None:
+        """Trasa zaktualizowana → system celu do schowka (w grze: mapa galaktyki → Ctrl+V)."""
+        if self.overlay is None or not self.user_config.get('auto_copy_system', True):
+            return
+        target = self._current_target(route)
+        if not target or target == self._copied_system:
+            return
+        self._copied_system = target
+        self.overlay.master.after(0, self._copy_now, target)
+
+    def _copy_now(self, target: str) -> None:
+        if self.panel is not None:
+            self.panel.copy_system(target)  # + komunikat w panelu
+        else:
+            self.overlay.master.clipboard_clear()
+            self.overlay.master.clipboard_append(target)
+        self.overlay.mark_copied(target)
+        logger.info("Schowek: %s", target)
 
     def _feed_checklist(self, event: dict) -> None:
         if self.checklist is None or not self.checklist.on_event(event):
@@ -260,6 +290,7 @@ class EDTradeOverlayApp:
             self.overlay._refresh_now()
         if self.panel is not None:
             self.panel.show_route(self.checklist.route)
+        self._copy_target(self.checklist.route)  # następny hop → nowy cel w schowku
 
     def _publish_session(self) -> None:
         """Podsumowanie sesji → panel (strona SESJA) i strona rotacji paska."""

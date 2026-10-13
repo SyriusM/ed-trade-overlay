@@ -447,7 +447,13 @@ class TradePanel:
         ttk.Entry(self.settings_frame, textvariable=self.game_window_class_var).grid(row=4, column=1, sticky='ew', pady=4)
 
         self.bar_only_var = tk.BooleanVar(value=bool(self.user_config.get('bar_only_when_game_focused', False)))
-        ttk.Checkbutton(self.settings_frame, text='Pasek tylko gdy gra ma fokus', variable=self.bar_only_var).grid(row=5, column=1, sticky='w', pady=4)
+        self.auto_copy_var = tk.BooleanVar(value=bool(self.user_config.get('auto_copy_system', True)))
+        options_line = ttk.Frame(self.settings_frame)
+        options_line.grid(row=5, column=1, sticky='w', pady=4)
+        ttk.Checkbutton(options_line, text='Pasek tylko gdy gra ma fokus', variable=self.bar_only_var).pack(side=tk.LEFT, padx=(0, 16))
+        ttk.Checkbutton(options_line, text='Kopiuj system celu do schowka po zmianie trasy', variable=self.auto_copy_var,
+                        command=lambda: self.user_config.__setitem__('auto_copy_system', bool(self.auto_copy_var.get()))
+                        ).pack(side=tk.LEFT)
 
         self.pad_filter_var = tk.StringVar(value=PAD_FILTER_LABELS.get(self.user_config.get('pad_filter', 'auto'),
                                                                         PAD_FILTER_LABELS['auto']))
@@ -1593,6 +1599,7 @@ class TradePanel:
             'market_type': market_type,
             'min_profit_per_t': min_profit,
             'max_data_age_days': max_age,
+            'auto_copy_system': bool(self.auto_copy_var.get()),
             'verdict_icons': bool(self.verdict_icons_var.get()),
             'verdict_labels': bool(self.verdict_labels_var.get()),
         })
