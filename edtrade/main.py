@@ -19,7 +19,7 @@ from .watcher import JournalWatcher
 from .filters import filter_from_config
 from .trade import market_from_market_json, nearby_candidates_from_market, rank_trades, Hop, TradeRoute
 from .trade import (TradeEngine, ship_needs_large_pad, get_system_info, search_stations, find_material_traders,
-                    get_station_market, age_hours, travel_seconds,
+                    get_station_market, age_hours, travel_seconds, apply_live_market, top_up_route,
                     find_mining_hotspots, find_mineral_buyers)
 from .overlay import TradeOverlay, compact_cr
 from .session import SessionLedger
@@ -82,8 +82,8 @@ def parse_args():
     parser.add_argument(
         "--credits",
         type=int,
-        default=100_000,
-        help="Dostępne kredyty (cr)",
+        default=None,
+        help="Dostępne kredyty (cr); domyślnie saldo z journala (LoadGame), a gdy nieznane — bez limitu",
     )
     parser.add_argument(
         "--ly-per",
@@ -214,6 +214,7 @@ class EDTradeOverlayApp:
             self.panel.show_pilot(self.pilot.describe())
         self._copied_system = ""
         self._live_market = None
+        self._replanned_for = None
         self._dock_generation = 0
         self._full_route_generation = 0
         self._quick_route_of = None  # (generation, TradeRoute) — szybka trasa z ostatniego dokowania
@@ -270,6 +271,7 @@ class EDTradeOverlayApp:
             "Loadout: capacity %.1f → %.1f, przeliczam trasę dla %s",
             self._last_capacity, capacity, key,
         )
+        self._sync_credits()
         route = self.trade_engine.calculate_route_via_spansh(system, station)
 
         if route.error:
@@ -295,6 +297,11 @@ class EDTradeOverlayApp:
         self.trade_engine.max_star_ls = market_filter.max_star_ls
         return market_filter
 
+    def _sync_credits(self) -> None:
+        """Kapitał dla Spansh = saldo z journala (chyba że podano --credits)."""
+        if self.args.credits is None and self.watcher.credits is not None:
+            self.trade_engine.credits = self.watcher.credits
+
     def _publish_route(self, route, system: str, station: str) -> None:
         """Nowa trasa → nowa checklista (kup → leć → sprzedaj) i wysłanie do overlaya."""
         self.checklist = None
@@ -308,6 +315,10 @@ class EDTradeOverlayApp:
         if not route.error and route.hops_list:
             if not self._commodity_names:
                 self._commodity_names = load_commodity_names()
+            try:  # wolne miejsce na każdym odcinku (też pustym dolocie) → towary na następny przystanek
+                top_up_route(route, int(self.trade_engine.capacity), self.trade_engine.capital, self._commodity_names)
+            except Exception:
+                logger.exception("Błąd dopełniania ładowni na trasie")
             self.checklist = RouteChecklist(
                 route, self._commodity_names,
                 cargo=self._cargo or self.watcher._player_cargo,
@@ -481,6 +492,7 @@ class EDTradeOverlayApp:
             logger.info("Docked w celu hopu %d — trasa w toku, bez przeliczania", self.checklist.hop_index + 1)
         else:
             self._apply_market_filter()
+            self._sync_credits()
             self._dock_generation += 1
             generation = self._dock_generation
             threading.Thread(target=self._quick_route, args=(system, station, generation), daemon=True).start()
@@ -596,13 +608,14 @@ class EDTradeOverlayApp:
             self._commodity_names = load_commodity_names()
         old_profit = hop.profit
         if here == (hop.source_system.lower(), hop.source_station.lower()) and checklist.bought < (hop.amount or 1):
-            check = verify.check_buy(hop, live, self._commodity_names, checklist.hop_index)
+            check = self._refill_from_live(checklist)
         elif here == (hop.destination_system.lower(), hop.destination_station.lower()) and checklist.bought:
             check = verify.check_sell(hop, live, self._commodity_names, checklist.hop_index)
         else:
             return
         route = checklist.route
-        route.total_profit += hop.profit - old_profit  # tylko różnica na tym hopie (inne hopy bez zmian)
+        if check.phase == verify.SELL:  # przy zakupie apply_live_market sam koryguje zysk trasy
+            route.total_profit += hop.profit - old_profit  # tylko różnica na tym hopie (inne hopy bez zmian)
         route._live_check = check
         checklist._sync_route()
         logger.info("Weryfikacja na żywo (hop %d, %s): %s", checklist.hop_index + 1, check.phase, check.text)
@@ -610,8 +623,27 @@ class EDTradeOverlayApp:
             self.overlay._refresh_now()
         if self.panel is not None:
             self.panel.show_route(route)
-        if check.level == verify.GONE:
+        if check.level == verify.GONE and self._replanned_for is not live:
+            self._replanned_for = live  # jedna nowa trasa na jeden Market.json (bez pętli ✗ → trasa → ✗)
             threading.Thread(target=self._replan_from_live, args=(live, check), daemon=True).start()
+
+    def _refill_from_live(self, checklist) -> "verify.LiveCheck":
+        """Stacja kupna bieżącego hopu: ładunek od nowa z tego, co faktycznie jest na rynku (Market.json) —
+        wiele towarów wg marży do celu, zapasu, wolnego miejsca i salda; komunikat ✓ / ⚠ / ✗ na pasek."""
+        hop, index, route = checklist.hop, checklist.hop_index, checklist.route
+        data = market_cache._load_market_json(self.watcher.journal_dir / "Market.json") or {}
+        before = hop.cargo_text()
+        dest = get_station_market(hop.destination_system, hop.destination_station)
+        self._sync_credits()
+        changed = apply_live_market(route, index, data.get("Items", []), dest.imports,
+                                    int(self.trade_engine.capacity), self.trade_engine.capital, self._commodity_names)
+        if not hop.commodities and not (hop.commodity and hop.amount):
+            route.error = ""  # zamiast błędu trasy: komunikat ✗ i nowa trasa z rynku na żywo
+            return verify.LiveCheck(verify.GONE, "✗ TOWARÓW Z TRASY JUŻ NIE MA", verify.BUY, index)
+        hop.src_updated_at = time.time()
+        if changed:
+            return verify.LiveCheck(verify.WARN, f"⚠ ŁADUNEK WG RYNKU: {hop.cargo_text().upper()}", verify.BUY, index)
+        return verify.LiveCheck(verify.OK, "✓ CENY KUPNA POTWIERDZONE", verify.BUY, index)
 
     def _best_single_route(self, market) -> Optional[TradeRoute]:
         """Najlepszy pojedynczy kurs (cr/h, wg filtrów) z rynku stacji → trasa 1-hop z checklistą.
@@ -626,7 +658,14 @@ class EDTradeOverlayApp:
             return None
         if not self._commodity_names:
             self._commodity_names = load_commodity_names()
+        self._sync_credits()
+        capital = self.trade_engine.capital
+        best = [t for t in best if t.buy_price <= capital]
+        if not best:
+            return None
         t = best[0]
+        if t.buy_price and t.units * t.buy_price > capital:  # saldo nie starcza na pełną ładownię
+            t.units = capital // t.buy_price
         name = self._commodity_names.get(t.commodity.lower(), t.commodity)
         hop = Hop(market.system_name, market.station_name, t.sell_system, t.sell_station, name, t.units, t.buy_price,
                   t.sell_price, t.total_profit, t.distance, _epoch(market.updated_at), _epoch(t.updated_at),

@@ -254,6 +254,9 @@ class TradeOverlay:
             display_dest_station = current_hop.destination_station
             display_item = current_hop.commodity
             display_qty = current_hop.amount
+            display_names = current_hop.names
+            display_cargo = current_hop.cargo_text() or "BEZ ŁADUNKU"
+            multi = len(current_hop.commodities) > 1
             display_buy = current_hop.buy_price
             display_sell = current_hop.sell_price
         else:
@@ -261,6 +264,9 @@ class TradeOverlay:
             display_dest_station = route.destination_station
             display_item = route.buy_item
             display_qty = route.buy_quantity
+            display_names = [display_item] if display_item else []
+            display_cargo = f"{display_item} ×{display_qty}"
+            multi = False
             display_buy = route.buy_price
             display_sell = route.sell_price
 
@@ -292,8 +298,9 @@ class TradeOverlay:
         if self._player_cargo and display_item and display_qty:
             def norm(name: str) -> str:
                 return "".join(ch for ch in name.lower() if ch.isalnum())
+            hop_names = {norm(n) for n in display_names}
             other_items = [f"{i.get('Name_Localised') or i['Name']} x{i['Count']}" for i in self._player_cargo
-                           if norm(display_item) not in (norm(i.get('Name', '')), norm(i.get('Name_Localised', '')))
+                           if not hop_names & {norm(i.get('Name', '')), norm(i.get('Name_Localised', ''))}
                            and i.get('Count', 0) > 0 and i.get('Name', '').lower() != 'drones'
                            and not i.get('MissionID')]
             if other_items:
@@ -301,8 +308,9 @@ class TradeOverlay:
 
         self._set_fit(self.dest_label, f"{display_dest_system} · {display_dest_station}".upper())
         self.meta_label.config(text="  ·  ".join(meta), fg=meta_color)  # krótkie — bez przycinania
-        route_text = (f"{display_item} ×{display_qty}  {display_buy:,} → {display_sell:,}"
-                      f"  ·  ZYSK {compact_cr(route.total_profit)} CR")
+        # Kilka towarów w ładowni: lista zamiast cen (ceny każdego są w panelu, w karcie hopu)
+        route_text = (f"{display_cargo}  ·  {display_qty}T" if multi else display_cargo if not display_names else
+                      f"{display_cargo}  {display_buy:,} → {display_sell:,}") + f"  ·  ZYSK {compact_cr(route.total_profit)} CR"
         if cargo_warning:
             route_text += f"  ·  {cargo_warning}"
         self._set_fit(self.route_label, route_text.upper(), fg=tce.GREEN if route.total_profit > 0 else tce.RED)

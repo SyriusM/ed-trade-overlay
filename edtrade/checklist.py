@@ -109,11 +109,13 @@ class RouteChecklist:
     def _matches(self, journal_type: str) -> bool:
         if not self.hop or not journal_type:
             return False
-        target = self.hop.commodity
         display = self.names.get(journal_type.lower())
-        if display:
-            return display.lower() == target.lower()
-        return _norm(journal_type) == _norm(target)
+        for target in self.hop.names:  # cały ładunek hopu, nie tylko główny towar
+            if display and display.lower() == target.lower():
+                return True
+            if not display and _norm(journal_type) == _norm(target):
+                return True
+        return False
 
     def at_destination(self) -> bool:
         hop = self.hop
@@ -146,6 +148,8 @@ class RouteChecklist:
                 self.arrived = True
                 if self.last_buy_ts is not None and ts is not None:
                     self._trip = (self.hop, self.last_buy_ts, ts)
+                if not self.hop.names:  # dolot bez ładunku — nie ma czego sprzedać
+                    self._advance()
                 return True
             return False
         if event == "MarketBuy" and self._matches(ev.get("Type", "")):

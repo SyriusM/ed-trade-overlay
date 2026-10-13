@@ -117,3 +117,28 @@ class TestChecklist(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMultiCommodityHop(unittest.TestCase):
+    def test_buy_and_sell_whole_load(self):
+        from edtrade.trade import HopCommodity
+        hop = Hop("A", "a", "B", "b", "Gold", 300, 1, 2,
+                  commodities=[HopCommodity("Gold", 100, 1, 2, 100), HopCommodity("Silver", 200, 1, 2, 50)])
+        cl = RouteChecklist(TradeRoute(hops=1, hops_list=[hop]), NAMES, docked=("A", "a"), created_at=T0)
+        cl.on_event(buy(1, "gold", 100))
+        cl.on_event(buy(2, "silver", 200))
+        self.assertEqual(cl.bought, 300)
+        self.assertIn("✓ kup 300/300", cl.status_text())
+        cl.on_event({"timestamp": ts(3), "event": "Docked", "StarSystem": "B", "StationName": "b"})
+        cl.on_event(sell(4, "gold", 100))
+        self.assertFalse(cl.finished)
+        cl.on_event(sell(5, "silver", 200))
+        self.assertTrue(cl.finished)
+
+
+class TestEmptyLeg(unittest.TestCase):
+    def test_arrival_completes_empty_hop(self):
+        route = TradeRoute(hops=2, hops_list=[Hop("A", "a", "B", "b"), Hop("B", "b", "C", "c", "Gold", 10, 1, 2)])
+        cl = RouteChecklist(route, NAMES, docked=("A", "a"), created_at=T0)
+        cl.on_event({"timestamp": ts(1), "event": "Docked", "StarSystem": "B", "StationName": "b"})
+        self.assertEqual(cl.hop_index, 1)

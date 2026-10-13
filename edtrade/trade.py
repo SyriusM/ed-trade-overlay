@@ -878,6 +878,115 @@ def best_sales_for_cargo(cargo: list[dict], reference_system: str, market_filter
     return rank_trades(cargo_candidates(cargo, reference_system, market_filter, max_ly, workers, jump_range), mode)
 
 
+def _market_symbol(item: dict) -> str:
+    """Symbol towaru z Market.json: "$gold_name;" → "gold"."""
+    name = item.get("Name", "")
+    if name.startswith("$") and name.endswith("_name;"):
+        name = name[1:-6]
+    return name
+
+
+def refill_hop_from_market(hop: "Hop", live_items: list[dict], dest_imports: list["MarketItem"], capacity: int,
+                           capital: int, names: Optional[dict[str, str]] = None, keep_load: bool = False) -> None:
+    """Ładunek hopu od nowa wg rynku z gry (Market.json), nie wg danych Spansh.
+
+    Spansh liczy na danych sprzed godzin — proponuje towary, których już nie ma (albo jest 1 t). Z bieżącego
+    rynku bierzemy tylko to, co jest na stanie, i dopełniamy ładownię wg marży do celu hopu: zachłannie
+    (największa marża pierwsza), ile pozwala zapas, popyt w celu, wolne miejsce i kredyty.
+    Ceny w celu: Ardent (dest_imports), a gdy ich brak — ceny sprzedaży ze Spansh dla towarów hopu.
+    keep_load=True: ładunek hopu zostaje, dobieramy tylko na wolne miejsce (inne towary).
+    """
+    names = names or {}
+    sell_at = {_norm_commodity(i.name): (i.sell_price, i.demand) for i in dest_imports if i.sell_price > 0}
+    for c in hop.commodities:
+        sell_at.setdefault(_norm_commodity(c.name), (c.sell_price, capacity))
+    offers = []
+    for item in live_items:
+        buy, stock = int(item.get("BuyPrice") or 0), int(item.get("Stock") or 0)
+        if buy <= 0 or stock <= 0:
+            continue
+        symbol = _market_symbol(item)
+        display = names.get(symbol.lower()) or item.get("Name_Localised") or symbol
+        dest = next((sell_at[k] for k in (_norm_commodity(symbol), _norm_commodity(display)) if k in sell_at), None)
+        if dest and dest[0] > buy:
+            offers.append((dest[0] - buy, display, buy, dest[0], min(stock, dest[1])))
+    space, money, load = int(capacity), int(capital), []
+    if keep_load:
+        load = list(hop.commodities)
+        space -= sum(c.amount for c in load)
+        money -= sum(c.amount * c.buy_price for c in load)
+        taken = {_norm_commodity(c.name) for c in load}
+        offers = [o for o in offers if _norm_commodity(o[1]) not in taken]
+    for margin, display, buy, sell, limit in sorted(offers, reverse=True):
+        units = min(limit, space, money // buy)
+        if units > 0:
+            load.append(HopCommodity(display, units, buy, sell, units * margin))
+            space -= units
+            money -= units * buy
+    hop.commodities = sorted(load, key=lambda c: c.profit, reverse=True)
+    main = hop.commodities[0] if load else HopCommodity()
+    hop.commodity, hop.buy_price, hop.sell_price = main.name, main.buy_price, main.sell_price
+    hop.amount = sum(c.amount for c in load)
+    hop.profit = sum(c.profit for c in load)
+
+
+def apply_live_market(route: "TradeRoute", hop_index: int, live_items: list[dict], dest_imports: list["MarketItem"],
+                      capacity: int, capital: int, names: Optional[dict[str, str]] = None) -> bool:
+    """Popraw hop `hop_index` trasy wg rynku z gry; zwraca True, gdy ładunek się zmienił."""
+    hop = route.hops_list[hop_index]
+    before = [(c.name, c.amount) for c in hop.commodities]
+    old_profit = hop.profit
+    refill_hop_from_market(hop, live_items, dest_imports, capacity, capital, names)
+    if [(c.name, c.amount) for c in hop.commodities] == before:
+        return False
+    route.total_profit += hop.profit - old_profit
+    if not hop.commodities:
+        route.error = "Na tym rynku nie ma już opłacalnych towarów z trasy (dane Spansh nieaktualne)"
+    if hop_index == 0:
+        route.buy_item, route.buy_price, route.sell_price = hop.commodity, hop.buy_price, hop.sell_price
+        route.buy_quantity = hop.commodities[0].amount if hop.commodities else 0
+        route.cargo_used = hop.amount
+        route.profit_per_unit = hop.sell_price - hop.buy_price if hop.commodities else 0
+    logger.info("Rynek z gry: hop %d %s → %s (zysk %d → %d)", hop_index + 1, before,
+                [(c.name, c.amount) for c in hop.commodities], old_profit, hop.profit)
+    return True
+
+
+def top_up_route(route: "TradeRoute", capacity: int, capital: int, names: Optional[dict[str, str]] = None,
+                 market_fn: Optional[Callable[[str, str], "StationMarket"]] = None) -> int:
+    """Żaden odcinek trasy nie leci pusty ani w połowie pusty: do ładunku Spansh dobieramy (wg danych Ardent)
+    towary opłacalne do sprzedaży na następnym przystanku — także na hopach dolotowych, gdzie Spansh nic nie wiezie.
+    Zwraca liczbę dopełnionych hopów."""
+    market_fn = market_fn or get_station_market
+    markets: dict[tuple[str, str], "StationMarket"] = {}
+
+    def market(system: str, station: str) -> "StationMarket":
+        key = (system.lower(), station.lower())
+        if key not in markets:
+            markets[key] = market_fn(system, station)
+        return markets[key]
+
+    changed = 0
+    for i, hop in enumerate(route.hops_list):
+        if hop.amount >= capacity:
+            continue
+        src = market(hop.source_system, hop.source_station)
+        dst = market(hop.destination_system, hop.destination_station)
+        items = [{"Name": e.name, "BuyPrice": e.buy_price, "Stock": e.stock} for e in src.exports]
+        before, old_profit = hop.amount, hop.profit
+        refill_hop_from_market(hop, items, dst.imports, capacity, capital, names, keep_load=True)
+        if hop.amount == before:
+            continue
+        changed += 1
+        route.total_profit += hop.profit - old_profit
+        if i == 0:
+            route.buy_item, route.buy_price, route.sell_price = hop.commodity, hop.buy_price, hop.sell_price
+            route.buy_quantity = hop.commodities[0].amount
+            route.cargo_used = hop.amount
+        logger.info("Dopełnienie hopu %d: %d t → %d t (zysk %d → %d)", i + 1, before, hop.amount, old_profit, hop.profit)
+    return changed
+
+
 SERVICE_FIELDS = (
     "shipyard", "outfitting", "blackMarket", "refuel", "repair",
     "interstellarFactors", "materialTrader", "technologyBroker",
@@ -960,8 +1069,22 @@ class JourneyPlan:
 
 
 @dataclass
+class HopCommodity:
+    """Jeden towar z ładunku hopu — Spansh dopełnia ładownię kilkoma towarami."""
+    name: str = ""
+    amount: int = 0
+    buy_price: int = 0
+    sell_price: int = 0
+    profit: int = 0
+
+
+@dataclass
 class Hop:
-    """Jeden hop (skok) w trasie wieloetapowej."""
+    """Jeden hop (skok) w trasie wieloetapowej.
+
+    commodity/buy_price/sell_price to towar dający największy zysk; amount i profit liczą cały ładunek
+    (wszystkie towary z `commodities`).
+    """
     source_system: str = ""
     source_station: str = ""
     destination_system: str = ""
@@ -975,6 +1098,17 @@ class Hop:
     src_updated_at: float = 0.0   # epoch s — kiedy Spansh ostatnio widział ceny stacji kupna
     dst_updated_at: float = 0.0   # … i stacji sprzedaży
     dst_ls: float = 0.0           # odległość stacji celu od gwiazdy (ls), gdy znana (szybka trasa / Ardent)
+    commodities: list = field(default_factory=list)  # HopCommodity, od największego zysku
+
+    @property
+    def names(self) -> list[str]:
+        return [c.name for c in self.commodities] or ([self.commodity] if self.commodity else [])
+
+    def cargo_text(self, limit: int = 2) -> str:
+        """Krótki opis ładunku: 'Gold ×400' albo 'Cobalt ×140 + Polymers ×172 +2' (reszta jako licznik)."""
+        items = self.commodities or ([HopCommodity(self.commodity, self.amount)] if self.commodity else [])
+        text = " + ".join(f"{c.name} ×{c.amount}" for c in items[:limit])
+        return text + (f" +{len(items) - limit}" if len(items) > limit else "")
 
 
 @dataclass
@@ -1013,9 +1147,10 @@ class TradeRoute:
             lines = [f"{self.source_system}/{self.source_station} → {self.destination_system} ({self.hops} hop{'y' if self.hops != 1 else ''})"]
             for i, hop in enumerate(self.hops_list):
                 lines.append(f"  Hop {i + 1}: {hop.source_station} → {hop.destination_station}")
-                if hop.commodity:
+                for c in hop.commodities or ([HopCommodity(hop.commodity, hop.amount, hop.buy_price, hop.sell_price,
+                                                            hop.profit)] if hop.commodity else []):
                     lines.append(
-                        f"    {hop.commodity} x{hop.amount} @ {hop.buy_price:,} → {hop.sell_price:,} (zysk {hop.profit:,})"
+                        f"    {c.name} x{c.amount} @ {c.buy_price:,} → {c.sell_price:,} (zysk {c.profit:,})"
                     )
                 dist = f" {hop.distance:.1f} ly" if hop.distance else ""
                 lines[-1] += dist
@@ -1179,6 +1314,11 @@ def ship_needs_large_pad(ship: str) -> bool:
     return (ship or "").lower() in LARGE_PAD_SHIPS
 
 
+# Kapitał, gdy saldo gracza nieznane — ograniczeniem ma być ładownia, nie kredyty.
+# (Stare domyślne 100 000 cr starczało na 2 t złota, więc trasa kończyła się na "Gold ×2".)
+UNLIMITED_CAPITAL = 10_000_000_000
+
+
 class TradeEngine:
     """Wywołuje Trade Dangerous i parsuje wynik."""
 
@@ -1187,19 +1327,23 @@ class TradeEngine:
         td_dir: Optional[Path] = None,
         td_venv: Optional[Path] = None,
         capacity: float = 304.0,
-        credits: int = 100_000,
+        credits: Optional[int] = None,
         ly_per: float = 32.0,
     ):
         self.td_dir = td_dir or DEFAULT_TD_DIR
         self.py_path = str((self.td_dir / td_venv).resolve()) if td_venv else "python3"
         self.trade_script = str((self.td_dir / "trade.py").resolve())
         self.capacity = capacity
-        self.credits = credits
+        self.credits = credits  # saldo gracza; None/0 = nieznane → UNLIMITED_CAPITAL
         self.ly_per = ly_per
         self.requires_large_pad = False
         self.max_star_ls = 5000.0  # 0 = bez limitu
         self._last_result: Optional[TradeRoute] = None
         self._polling_callback: Optional[Callable[[int], None]] = None
+
+    @property
+    def capital(self) -> int:
+        return int(self.credits) if self.credits and self.credits > 0 else UNLIMITED_CAPITAL
 
     def set_polling_callback(self, callback: Optional[Callable[[int], None]]) -> None:
         """Ustaw funkcję wywoływaną co 30s podczas pollingu Spansh."""
@@ -1229,7 +1373,7 @@ class TradeEngine:
             "--capacity",
             str(cap),
             "--credits",
-            str(self.credits),
+            str(self.capital),
             "--ly-per",
             str(ly),
             "--routes",
@@ -1381,7 +1525,7 @@ class TradeEngine:
         payload = {
             "system": system,
             "station": station,
-            "starting_capital": self.credits,
+            "starting_capital": self.capital,
             "max_cargo": int(cap),
             "max_hops": max_hops,
             "max_hop_distance": ly,
@@ -1648,25 +1792,30 @@ class TradeEngine:
             logger.debug("Hop %d: dest=%s/%s id64=%s", len(route.hops_list),
                          dst.get("system","?"), dst.get("station","?"), hop._destination_id64)
 
-            if comms:
-                c = comms[0]
-                hop.commodity = c.get("name", "")
-                hop.amount = c.get("amount", 0)
-                hop.buy_price = c.get("source_commodity", {}).get("buy_price", 0)
-                hop.sell_price = c.get("destination_commodity", {}).get("sell_price", 0)
-                hop.profit = c.get("total_profit", 0)
+            # Spansh dopełnia ładownię kilkoma towarami (np. 1 t srebra + 140 t kobaltu) — liczy się cały ładunek
+            hop.commodities = sorted(
+                (HopCommodity(name=c.get("name", ""), amount=c.get("amount", 0),
+                              buy_price=c.get("source_commodity", {}).get("buy_price", 0),
+                              sell_price=c.get("destination_commodity", {}).get("sell_price", 0),
+                              profit=c.get("total_profit", 0)) for c in comms),
+                key=lambda c: c.profit, reverse=True)
+            if hop.commodities:
+                main = hop.commodities[0]
+                hop.commodity, hop.buy_price, hop.sell_price = main.name, main.buy_price, main.sell_price
+                hop.amount = sum(c.amount for c in hop.commodities)
+                hop.profit = sum(c.profit for c in hop.commodities)
 
             route.hops_list.append(hop)
 
         route.hops = num_hops
         route.jumps = num_hops
-        route.cargo_used = results[0].get("commodities", [{}])[0].get("amount", 0)
+        route.cargo_used = route.hops_list[0].amount if route.hops_list else 0
 
         # Ustawiamy pola legacy (pierwszy hop)
         if route.hops_list:
             f = route.hops_list[0]
             route.buy_item = f.commodity
-            route.buy_quantity = f.amount
+            route.buy_quantity = f.commodities[0].amount if f.commodities else f.amount
             route.buy_price = f.buy_price
             route.sell_price = f.sell_price
             route.total_profit = route.hops_list[-1].profit if len(route.hops_list) == 1 else route.total_profit
