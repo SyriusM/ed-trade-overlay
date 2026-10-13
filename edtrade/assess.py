@@ -1,5 +1,5 @@
 """Ocena okazji handlowej na bieżąco, skala 6 stopni + punkty SWOT:
-= OPTIMAL · ≠ NOT OPTIMAL · ▲ SAFE · ▲▲ VERY SAFE · ▼ RISKY · ▼▼ VERY RISKY.
+= OPTIMAL · ≈ NOT OPTIMAL · ▲ SAFE · ▲▲ VERY SAFE · ▼ RISKY · ▼▼ VERY RISKY.
 
 Wartość = zysk oczekiwany względem najlepszej okazji na tej samej liście (w trybie rankingu),
 ryzyko = szansa, że na miejscu będzie inaczej (wiek cen, płytki popyt, długi lot).
@@ -13,7 +13,7 @@ SAFE, OPTIMAL, RISKY = "safe", "optimal", "risky"
 ICONS = {OPTIMAL: "=", SAFE: "▲", RISKY: "▼"}
 LABELS = {OPTIMAL: "OPTIMAL", SAFE: "SAFE", RISKY: "RISKY"}
 # Drugi stopień każdej klasy (shade ≥ 0.5 — ciemniejszy koniec gradientu)
-STRONG_ICONS = {OPTIMAL: "≠", SAFE: "▲▲", RISKY: "▼▼"}
+STRONG_ICONS = {OPTIMAL: "≈", SAFE: "▲▲", RISKY: "▼▼"}
 STRONG_LABELS = {OPTIMAL: "NOT OPTIMAL", SAFE: "VERY SAFE", RISKY: "VERY RISKY"}
 STRONG_FROM = 0.5
 

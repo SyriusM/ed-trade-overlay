@@ -107,7 +107,7 @@ def test_six_step_scale():
     assert assess.assess_all([best], v)[0].badge == "= OPTIMAL"
     # przeciętny zysk przy umiarkowanym ryzyku (ceny sprzed 2 dni) → NOT OPTIMAL
     mid = assess.assess_all([best, trade(per_t=1000, age=48)], v)[1]
-    assert mid.badge == "≠ NOT OPTIMAL"
+    assert mid.badge == "≈ NOT OPTIMAL"
     assert assess.assess_all([trade(age=24 * 5)], v)[0].badge == "▼ RISKY"
     assert assess.assess_all([trade(age=24 * 10, demand=256)], v)[0].badge == "▼▼ VERY RISKY"
     assert assess.badge_for("safe", 0.2) == "▲ SAFE"

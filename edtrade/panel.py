@@ -28,7 +28,7 @@ from .trade import (get_system_info, search_stations, find_material_traders, fin
 COMMODITY_MODES = ('Kup', 'Sprzedaj')
 PAGE_HINTS = {
     'Trasa': 'Najlepsza trasa z bieżącej stacji — liczy się sama po dokowaniu, kroki odhaczają się z gry.',
-    'Okolica': '= OPTIMAL · ≠ NOT OPTIMAL · ▲ SAFE · ▲▲ VERY SAFE · ▼ RISKY · ▼▼ VERY RISKY · ■ HOLD · '
+    'Okolica': '= OPTIMAL · ≈ NOT OPTIMAL · ▲ SAFE · ▲▲ VERY SAFE · ▼ RISKY · ▼▼ VERY RISKY · ■ HOLD · '
                'klik: SWOT · dwuklik: kopiuj system',
     'Porównaj': 'Bieżąca stacja vs cel (jak Trade Overview w TCE). Otwórz z OKOLICY: prawy klik → Porównaj.',
     'Market': 'Pełny rynek jednej stacji. Wypełnia się sam po dokowaniu.',
