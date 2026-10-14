@@ -878,7 +878,7 @@ class EDTradeOverlayApp:
             return verify.LiveCheck(verify.GONE, "✗ TOWARÓW Z TRASY JUŻ NIE MA", verify.BUY, index)
         hop.src_updated_at = time.time()
         if changed:
-            return verify.LiveCheck(verify.WARN, f"⚠ ŁADUNEK WG RYNKU: {hop.cargo_text().upper()}", verify.BUY, index)
+            return verify.LiveCheck(verify.WARN, "⚠ ŁADUNEK ZMIENIONY WG RYNKU — PATRZ CEL", verify.BUY, index)
         return verify.LiveCheck(verify.OK, "✓ CENY KUPNA POTWIERDZONE", verify.BUY, index)
 
     def _best_single_route(self, market) -> Optional[TradeRoute]:

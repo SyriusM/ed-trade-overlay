@@ -21,3 +21,13 @@ def test_fit_line_truncates_with_ellipsis():
 
 def test_fit_line_unmapped_widget_untouched():
     assert fit_line("ABC", 1, len) == "ABC"
+
+
+
+def test_shrink_size_before_ellipsis():
+    from edtrade.overlay import shrink_size
+    measure_at = lambda size, text: size * len(text)  # szerokość ∝ rozmiar
+    assert shrink_size("abcdefghij", 200, 20, measure_at) == 20      # mieści się
+    assert shrink_size("abcdefghij", 160, 20, measure_at) == 16      # zmniejsza
+    assert shrink_size("abcdefghij", 50, 20, measure_at) == 14       # nie poniżej 70%
+    assert shrink_size("ab\nabcdefghij", 160, 20, measure_at) == 16  # najdłuższa linia decyduje
