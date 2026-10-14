@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 # Górny pasek pełnej szerokości w układzie MAIN UI z TCE: POZYCJA | status trasy | CEL
 WINDOW_HEIGHT = 84
 MARGIN = 8
+# Długi tekst najpierw zmniejsza czcionkę (do tej części bazowej), dopiero potem dostaje „…”
+MIN_FONT_RATIO = 0.7
 
 
 def compact_cr(value: int) -> str:
@@ -46,6 +48,23 @@ def fit_line(text: str, width: int, measure: Callable[[str], int]) -> str:
         else:
             hi = mid - 1
     return text[:lo].rstrip() + "…"
+
+
+def shrink_size(text: str, width: int, base: int, measure_at: Callable[[int, str], int]) -> int:
+    """Największy rozmiar czcionki (≤ base, ≥ MIN_FONT_RATIO·base), przy którym każda linia się mieści."""
+    floor = max(6, round(base * MIN_FONT_RATIO))
+    if width <= 1 or not text:
+        return base
+    size = base
+    while size > floor and any(measure_at(size, line) > width for line in text.split("\n")):
+        size -= 1
+    return size
+
+
+def _measure_at(font: tkfont.Font, size: int, text: str) -> int:
+    if font.actual("size") != size:
+        font.configure(size=size)
+    return font.measure(text)
 
 
 class TradeOverlay:
@@ -102,6 +121,9 @@ class TradeOverlay:
         self.fonts.set_scale(font_scale)
         self._apply_geometry(font_scale)
         self.slider.place()
+        for label in (self.system_info_label, self.status_label, self.steps_label, self.dest_label, self.route_label):
+            if getattr(label, "_fit_bound", False):
+                self._refit(label)  # kopie czcionek nie śledzą skali same
 
     def _setup_fonts(self):
         fonts = tce.Fonts(self.master)
@@ -127,9 +149,10 @@ class TradeOverlay:
         tk.Frame(self.frame, bg=tce.ORANGE, height=2).pack(side=tk.BOTTOM, fill=tk.X)
         body = tk.Frame(self.frame, bg=tce.BG)
         body.pack(fill=tk.BOTH, expand=True)
-        body.columnconfigure(0, weight=3, uniform="ui")
-        body.columnconfigure(1, weight=2, uniform="ui")
-        body.columnconfigure(2, weight=3, uniform="ui")
+        # POZYCJA ma krótkie linie — więcej miejsca dla statusu i CEL-u (2:3:4)
+        body.columnconfigure(0, weight=2, uniform="ui")
+        body.columnconfigure(1, weight=3, uniform="ui")
+        body.columnconfigure(2, weight=4, uniform="ui")
         body.rowconfigure(0, weight=1)
 
         left = self._display(body, "POZYCJA")
@@ -166,9 +189,13 @@ class TradeOverlay:
         self._hide_content()
 
     def _set_fit(self, label: tk.Label, text: str, **kw) -> None:
-        """Ustaw tekst przycięty do szerokości etykiety; po zmianie rozmiaru/skali przycina ponownie."""
+        """Ustaw tekst dopasowany do szerokości etykiety; po zmianie rozmiaru/skali dopasowuje ponownie."""
         label._full_text = text
         if not getattr(label, "_fit_bound", False):
+            base = tkfont.nametofont(str(label.cget("font")), root=label)
+            label._base_font = base
+            label._fit_font = tkfont.Font(label, **base.actual())  # własna kopia — zmniejszana bez wpływu na resztę
+            label.config(font=label._fit_font)
             label.bind("<Configure>", lambda _e, lb=label: self._refit(lb), add="+")
             label._fit_bound = True
         if kw:
@@ -179,8 +206,12 @@ class TradeOverlay:
         text = getattr(label, "_full_text", None)
         if text is None:
             return
-        measure = tkfont.nametofont(str(label.cget("font")), root=label).measure
         width = label.winfo_width() - 2 * int(label.cget("padx") or 0) - 4
+        size = shrink_size(text, width, label._base_font.actual("size"),
+                           lambda n, t: _measure_at(label._fit_font, n, t))
+        if label._fit_font.actual("size") != size:
+            label._fit_font.configure(size=size)
+        measure = label._fit_font.measure
         fitted = "\n".join(fit_line(line, width, measure) for line in text.split("\n"))
         if label.cget("text") != fitted:
             label.config(text=fitted)
