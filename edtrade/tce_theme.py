@@ -410,3 +410,148 @@ class GroupedNavBar(tk.Frame):
             self._subs[title].select(page_id, notify=False)
         self._last_page[title] = page_id
         self._show(page_id)
+
+
+class SuggestEntry(ttk.Entry):
+    """Pole z podpowiedziami: po kilku literach lista pasujących nazw pod polem (bez zabierania fokusu).
+
+    source(tekst) → lista nazw; remote=True: źródło sieciowe — w wątku, z opóźnieniem po ostatnim klawiszu.
+    ↓/↑ wybór, Enter/Tab/klik akceptuje (on_select), Esc zamyka. ↓ w pustym polu pokazuje całą listę.
+    """
+
+    NAV_KEYS = {"Up", "Down", "Return", "KP_Enter", "Escape", "Tab", "ISO_Left_Tab", "Shift_L", "Shift_R",
+                "Control_L", "Control_R", "Alt_L", "Alt_R", "Left", "Right", "Home", "End"}
+
+    def __init__(self, parent: tk.Misc, source: Callable[[str], list], textvariable: tk.StringVar,
+                 fonts: "Fonts", remote: bool = False, on_select: Optional[Callable[[str], None]] = None,
+                 delay_ms: int = 300, **kw):
+        super().__init__(parent, textvariable=textvariable, **kw)
+        self.var = textvariable
+        self.source = source
+        self.remote = remote
+        self.on_select = on_select
+        self.delay_ms = delay_ms
+        self._job = None
+        self._generation = 0
+        self.popup = tk.Toplevel(self)
+        self.popup.withdraw()
+        self.popup.overrideredirect(True)
+        try:
+            self.popup.wm_attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        self.listbox = tk.Listbox(self.popup, bg=ROW_BG, fg=ORANGE, selectbackground=ORANGE,
+                                  selectforeground=TEXT_ON_ORANGE, font=fonts.body_bold, activestyle="none",
+                                  highlightthickness=1, highlightbackground=ORANGE, bd=0, exportselection=False)
+        self.listbox.pack(fill=tk.BOTH, expand=True)
+        self.listbox.bind("<ButtonRelease-1>", lambda _e: self._accept())
+        self.bind("<KeyRelease>", self._on_key, add="+")
+        self.bind("<Down>", lambda _e: self._move(1), add="+")
+        self.bind("<Up>", lambda _e: self._move(-1), add="+")
+        self.bind("<Return>", self._on_return, add="+")
+        self.bind("<KP_Enter>", self._on_return, add="+")
+        self.bind("<Tab>", self._on_tab, add="+")
+        self.bind("<Escape>", lambda _e: self.hide(), add="+")
+        self.bind("<FocusOut>", lambda _e: self.after(200, self._hide_unless_focused), add="+")
+
+    # --- wyszukiwanie ---
+    def _on_key(self, event) -> None:
+        if event.keysym in self.NAV_KEYS:
+            return
+        if self._job is not None:
+            self.after_cancel(self._job)
+        self._job = self.after(self.delay_ms if self.remote else 0, self.refresh)
+
+    def refresh(self, show_all: bool = False) -> None:
+        """Przelicz podpowiedzi dla bieżącego tekstu (źródło sieciowe — w wątku)."""
+        self._job = None
+        self._generation += 1
+        generation, typed = self._generation, self.var.get()
+        if not typed.strip() and not show_all:
+            self.hide()
+            return
+        if not self.remote:
+            self.show(self._safe_source(typed))
+            return
+        import threading
+        threading.Thread(target=lambda: self._deliver(generation, typed, self._safe_source(typed)),
+                         daemon=True).start()
+
+    def _safe_source(self, typed: str) -> list:
+        try:
+            return list(self.source(typed))
+        except Exception:
+            return []
+
+    def _deliver(self, generation: int, typed: str, items: list) -> None:
+        try:
+            self.after(0, lambda: generation == self._generation and self.var.get() == typed and self.show(items))
+        except (tk.TclError, RuntimeError):
+            pass
+
+    # --- lista ---
+    def show(self, items: list) -> None:
+        typed = self.var.get().strip().lower()
+        if not items or (len(items) == 1 and items[0].lower() == typed) or self.focus_get() is not self:
+            self.hide()
+            return
+        self.listbox.delete(0, tk.END)
+        for item in items:
+            self.listbox.insert(tk.END, item)
+        self.listbox.configure(height=min(len(items), 10))
+        self.update_idletasks()
+        width = max(self.winfo_width(), max(self.listbox.winfo_reqwidth(), 120))
+        self.popup.geometry(f"{width}x{self.listbox.winfo_reqheight()}"
+                            f"+{self.winfo_rootx()}+{self.winfo_rooty() + self.winfo_height()}")
+        self.popup.deiconify()
+        self.popup.lift()
+
+    def visible(self) -> bool:
+        return bool(self.popup.winfo_ismapped())
+
+    def hide(self) -> None:
+        self.popup.withdraw()
+
+    def _hide_unless_focused(self) -> None:
+        if self.focus_get() is not self:
+            self.hide()
+
+    def _move(self, step: int) -> str:
+        if not self.visible():
+            self.refresh(show_all=True)
+            return "break"
+        size = self.listbox.size()
+        if size:
+            current = self.listbox.curselection()
+            index = (current[0] + step) % size if current else (0 if step > 0 else size - 1)
+            self.listbox.selection_clear(0, tk.END)
+            self.listbox.selection_set(index)
+            self.listbox.see(index)
+        return "break"
+
+    def _accept(self) -> None:
+        current = self.listbox.curselection()
+        if current:
+            self.var.set(self.listbox.get(current[0]))
+            self.icursor(tk.END)
+        self.hide()
+        self.focus_set()
+        if self.on_select is not None:
+            self.on_select(self.var.get())
+
+    def _on_return(self, _event) -> str:
+        if self.visible() and self.listbox.curselection():
+            self._accept()
+        else:
+            self.hide()
+            if self.on_select is not None and self.var.get().strip():
+                self.on_select(self.var.get())
+        return "break"
+
+    def _on_tab(self, _event) -> Optional[str]:
+        if self.visible() and self.listbox.size():
+            if not self.listbox.curselection():
+                self.listbox.selection_set(0)
+            self._accept()
+            return "break"
+        return None

@@ -17,7 +17,7 @@ from .config import load_user_config, save_user_config
 from . import materials as mats
 from . import tce_theme as tce
 from .checklist import load_commodity_names
-from . import assess, bottom_bar, clipboard, guardian
+from . import assess, bottom_bar, clipboard, guardian, suggest
 from . import trade as trade_mod
 from .filters import filter_from_config
 from .hotkeys import DEFAULT_MODIFIER, MODIFIERS, PANEL_PAGES, slot_geometry, slots_from_config
@@ -34,12 +34,12 @@ PAGE_HINTS = {
                'klik: SWOT · dwuklik: kopiuj system',
     'Porównaj': 'Bieżąca stacja vs cel (jak Trade Overview w TCE). Otwórz z OKOLICY: prawy klik → Porównaj.',
     'Market': 'Pełny rynek jednej stacji. Wypełnia się sam po dokowaniu.',
-    'Towary': 'Gdzie najtaniej kupić / najdrożej sprzedać dowolny towar. Dwuklik: kopiuj system.',
+    'Towary': 'Gdzie najtaniej kupić / najdrożej sprzedać dowolny towar. Wpisz kilka liter — lista podpowie. Dwuklik: kopiuj system.',
     'Journey': 'Trasa skoków A → B (Spansh). Dwuklik na systemie: kopiuj do mapy galaktyki.',
     'System': 'Stacje w systemie. Dwuklik: kopiuj system · prawy klik: rynek / porównaj.',
     'Materiały': 'Najbliżsi handlarze materiałów. Dwuklik: kopiuj system.',
-    'Mining': 'Gdzie kopać (hotspoty) i gdzie sprzedać. Dwuklik: kopiuj system.',
-    'Blueprinty': 'Czego brakuje do ulepszenia — stan materiałów z journala.',
+    'Mining': 'Gdzie kopać (hotspoty) i gdzie sprzedać. Minerał: kilka liter i wybór z listy. Dwuklik: kopiuj system.',
+    'Blueprinty': 'Czego brakuje do ulepszenia — wpisz kilka liter blueprintu i wybierz z listy. Stan materiałów z journala.',
     'Sesja': 'Zarobki z tej sesji gry (od uruchomienia gry), liczone z journala. Prawy klik: rynek stacji.',
     'Ustawienia': 'Filtry rynków, wygląd paska i panelu. Zmiany zapisują się same.',
     'Guardian': 'Najbliższe ruiny i struktury Guardian (Spansh). Dwuklik: kopiuj system · '
@@ -133,6 +133,10 @@ class TradePanel:
         trade_mod.set_risk_profile(str(self.user_config.get('risk_profile', 'auto')))
         self.fonts = tce.Fonts(self.window, scale=float(self.user_config.get('panel_font_scale', 1.0)))
         tce.apply_ttk_theme(self.window, self.fonts)
+        # Podpowiedzi w polach: towary/minerały (FDevIDs, w tle), systemy (Spansh), stacje systemu (Ardent)
+        self._catalog = suggest.Catalog()
+        threading.Thread(target=self._catalog.load, daemon=True).start()
+        self._station_names = suggest.StationNames(search_stations)
 
         self.title_bar = tce.TitleBar(self.window, 'Trasa', self.fonts,
                                       on_control=self._open_settings, on_hide=self.window.iconify)
@@ -182,10 +186,13 @@ class TradePanel:
         self.nearby_mode_var = tk.StringVar(value='per_hour')
         nearby_entry = ttk.Frame(self.tab_nearby)
         nearby_entry.pack(fill=tk.X, padx=10, pady=(10, 4))
-        for label, var, width in (('System:', self.nearby_system_var, 18), ('Stacja:', self.nearby_station_var, 22),
-                                  ('Zasięg (ly):', self.nearby_range_var, 6)):
-            ttk.Label(nearby_entry, text=label).pack(side=tk.LEFT)
-            ttk.Entry(nearby_entry, textvariable=var, width=width).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(nearby_entry, text='System:').pack(side=tk.LEFT)
+        self._suggest(nearby_entry, self.nearby_system_var, 'system', 18).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(nearby_entry, text='Stacja:').pack(side=tk.LEFT)
+        self._suggest(nearby_entry, self.nearby_station_var, 'station', 22, system_var=self.nearby_system_var,
+                      on_select=lambda _v: self.refresh_nearby_tab()).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(nearby_entry, text='Zasięg (ly):').pack(side=tk.LEFT)
+        ttk.Entry(nearby_entry, textvariable=self.nearby_range_var, width=6).pack(side=tk.LEFT, padx=(4, 10))
         self.nearby_btn = ttk.Button(nearby_entry, text='Szukaj', command=self.refresh_nearby_tab)
         self.nearby_btn.pack(side=tk.LEFT)
         self.nearby_modes = tce.SegmentedButtons(self.tab_nearby, list(RANK_MODES.items()), self.fonts,
@@ -224,7 +231,8 @@ class TradePanel:
         self.system_entry_frame = ttk.Frame(self.tab_system)
         self.system_entry_frame.pack(fill=tk.X, padx=10, pady=(10, 4))
         ttk.Label(self.system_entry_frame, text='System:').pack(side=tk.LEFT)
-        self.system_entry = ttk.Entry(self.system_entry_frame, textvariable=self.system_entry_var, width=30)
+        self.system_entry = self._suggest(self.system_entry_frame, self.system_entry_var, 'system', 30,
+                                          on_select=lambda _v: self.refresh_system_tab())
         self.system_entry.pack(side=tk.LEFT, padx=(4, 4))
         self.system_refresh_btn = ttk.Button(self.system_entry_frame, text='Odśwież', command=self.refresh_system_tab)
         self.system_refresh_btn.pack(side=tk.LEFT)
@@ -245,7 +253,7 @@ class TradePanel:
         self.materials_entry_frame = ttk.Frame(self.tab_materials)
         self.materials_entry_frame.pack(fill=tk.X, padx=10, pady=(10, 4))
         ttk.Label(self.materials_entry_frame, text='System:').pack(side=tk.LEFT)
-        ttk.Entry(self.materials_entry_frame, textvariable=self.materials_system_var, width=20).pack(side=tk.LEFT, padx=(4, 10))
+        self._suggest(self.materials_entry_frame, self.materials_system_var, 'system', 20).pack(side=tk.LEFT, padx=(4, 10))
         ttk.Label(self.materials_entry_frame, text='Rodzaj:').pack(side=tk.LEFT)
         ttk.Combobox(self.materials_entry_frame, textvariable=self.materials_kind_var, values=['Raw', 'Encoded', 'Manufactured'], width=15, state='readonly').pack(side=tk.LEFT, padx=(4, 10))
         self.materials_btn = ttk.Button(self.materials_entry_frame, text='Odśwież', command=self.refresh_materials_tab)
@@ -267,9 +275,10 @@ class TradePanel:
         self.mining_entry_frame = ttk.Frame(self.tab_mining)
         self.mining_entry_frame.pack(fill=tk.X, padx=10, pady=(10, 4))
         ttk.Label(self.mining_entry_frame, text='System:').pack(side=tk.LEFT)
-        ttk.Entry(self.mining_entry_frame, textvariable=self.mining_system_var, width=20).pack(side=tk.LEFT, padx=(4, 10))
+        self._suggest(self.mining_entry_frame, self.mining_system_var, 'system', 20).pack(side=tk.LEFT, padx=(4, 10))
         ttk.Label(self.mining_entry_frame, text='Minerał:').pack(side=tk.LEFT)
-        ttk.Entry(self.mining_entry_frame, textvariable=self.mining_tab_mineral_var, width=20).pack(side=tk.LEFT, padx=(4, 10))
+        self._suggest(self.mining_entry_frame, self.mining_tab_mineral_var, 'mineral', 20,
+                      on_select=lambda _v: self.refresh_mining_tab()).pack(side=tk.LEFT, padx=(4, 10))
         self.mining_btn = ttk.Button(self.mining_entry_frame, text='Odśwież', command=self.refresh_mining_tab)
         self.mining_btn.pack(side=tk.LEFT)
 
@@ -301,9 +310,10 @@ class TradePanel:
         self.commodity_entry_frame = ttk.Frame(self.tab_commodity)
         self.commodity_entry_frame.pack(fill=tk.X, padx=10, pady=(10, 4))
         ttk.Label(self.commodity_entry_frame, text='System:').pack(side=tk.LEFT)
-        ttk.Entry(self.commodity_entry_frame, textvariable=self.commodity_system_var, width=18).pack(side=tk.LEFT, padx=(4, 10))
+        self._suggest(self.commodity_entry_frame, self.commodity_system_var, 'system', 18).pack(side=tk.LEFT, padx=(4, 10))
         ttk.Label(self.commodity_entry_frame, text='Towar:').pack(side=tk.LEFT)
-        ttk.Entry(self.commodity_entry_frame, textvariable=self.commodity_name_var, width=18).pack(side=tk.LEFT, padx=(4, 10))
+        self._suggest(self.commodity_entry_frame, self.commodity_name_var, 'commodity', 22,
+                      on_select=lambda _v: self.refresh_commodity_tab()).pack(side=tk.LEFT, padx=(4, 10))
         self.commodity_btn = ttk.Button(self.commodity_entry_frame, text='Szukaj', command=self.refresh_commodity_tab)
         self.commodity_btn.pack(side=tk.LEFT)
         self.commodity_modes = tce.SegmentedButtons(
@@ -326,9 +336,10 @@ class TradePanel:
         self.market_entry_frame = ttk.Frame(self.tab_market)
         self.market_entry_frame.pack(fill=tk.X, padx=10, pady=(10, 4))
         ttk.Label(self.market_entry_frame, text='System:').pack(side=tk.LEFT)
-        ttk.Entry(self.market_entry_frame, textvariable=self.market_system_var, width=18).pack(side=tk.LEFT, padx=(4, 10))
+        self._suggest(self.market_entry_frame, self.market_system_var, 'system', 18).pack(side=tk.LEFT, padx=(4, 10))
         ttk.Label(self.market_entry_frame, text='Stacja:').pack(side=tk.LEFT)
-        ttk.Entry(self.market_entry_frame, textvariable=self.market_station_var, width=22).pack(side=tk.LEFT, padx=(4, 10))
+        self._suggest(self.market_entry_frame, self.market_station_var, 'station', 22, system_var=self.market_system_var,
+                      on_select=lambda _v: self.refresh_market_tab()).pack(side=tk.LEFT, padx=(4, 10))
         self.market_btn = ttk.Button(self.market_entry_frame, text='Pokaż', command=self.refresh_market_tab)
         self.market_btn.pack(side=tk.LEFT)
 
@@ -360,9 +371,9 @@ class TradePanel:
         self.journey_entry_frame = ttk.Frame(self.tab_journey)
         self.journey_entry_frame.pack(fill=tk.X, padx=10, pady=(10, 4))
         ttk.Label(self.journey_entry_frame, text='Start:').pack(side=tk.LEFT)
-        ttk.Entry(self.journey_entry_frame, textvariable=self.journey_start_var, width=15).pack(side=tk.LEFT, padx=(4, 10))
+        self._suggest(self.journey_entry_frame, self.journey_start_var, 'system', 18).pack(side=tk.LEFT, padx=(4, 10))
         ttk.Label(self.journey_entry_frame, text='Cel:').pack(side=tk.LEFT)
-        ttk.Entry(self.journey_entry_frame, textvariable=self.journey_end_var, width=15).pack(side=tk.LEFT, padx=(4, 10))
+        self._suggest(self.journey_entry_frame, self.journey_end_var, 'system', 18).pack(side=tk.LEFT, padx=(4, 10))
         ttk.Label(self.journey_entry_frame, text='Zasięg (ly):').pack(side=tk.LEFT)
         ttk.Entry(self.journey_entry_frame, textvariable=self.journey_range_var, width=8).pack(side=tk.LEFT, padx=(4, 10))
         self.journey_calc_btn = ttk.Button(self.journey_entry_frame, text='Oblicz', command=self.refresh_journey_tab)
@@ -393,7 +404,10 @@ class TradePanel:
         self.eng_entry_frame.pack(fill=tk.X, padx=10, pady=(10, 4))
         self.eng_entry_frame.columnconfigure(1, weight=1)
         ttk.Label(self.eng_entry_frame, text='Blueprint:').grid(row=0, column=0, sticky='w')
-        self.eng_blueprint_combo = ttk.Combobox(self.eng_entry_frame, textvariable=self.eng_blueprint_var, state='readonly')
+        # Wpisz kilka liter (np. "dirty", "FSD") — lista pasujących blueprintów; wybór od razu liczy
+        self.eng_blueprint_combo = tce.SuggestEntry(
+            self.eng_entry_frame, lambda t: suggest.filter_names(self._blueprints, t, 15), self.eng_blueprint_var,
+            self.fonts, on_select=lambda _v: self.refresh_engineering_tab())
         self.eng_blueprint_combo.grid(row=0, column=1, columnspan=6, sticky='ew', padx=(4, 0), pady=2)
         ttk.Label(self.eng_entry_frame, text='Grade od:').grid(row=1, column=0, sticky='w')
         ttk.Combobox(self.eng_entry_frame, textvariable=self.eng_grade_from_var, values=['1', '2', '3', '4', '5'],
@@ -453,7 +467,7 @@ class TradePanel:
 
         ttk.Label(self.settings_frame, text='Cel journey (system):').grid(row=0, column=0, sticky='w', padx=(0, 8), pady=2)
         self.journey_target_var = tk.StringVar(value=str(self.user_config.get('journey_target_system', '')))
-        ttk.Entry(self.settings_frame, textvariable=self.journey_target_var).grid(row=0, column=1, sticky='ew', pady=2)
+        self._suggest(self.settings_frame, self.journey_target_var, 'system').grid(row=0, column=1, sticky='ew', pady=2)
 
         ttk.Label(self.settings_frame, text='Zasięg statku (ly):').grid(row=1, column=0, sticky='w', padx=(0, 8), pady=2)
         self.ship_range_var = tk.StringVar(value=str(self.user_config.get('ship_range_ly', 30.0)))
@@ -466,7 +480,7 @@ class TradePanel:
 
         ttk.Label(self.settings_frame, text='Mining (minerał):').grid(row=3, column=0, sticky='w', padx=(0, 8), pady=2)
         self.mining_mineral_var = tk.StringVar(value=str(self.user_config.get('mining_mineral', '')))
-        ttk.Entry(self.settings_frame, textvariable=self.mining_mineral_var).grid(row=3, column=1, sticky='ew', pady=2)
+        self._suggest(self.settings_frame, self.mining_mineral_var, 'mineral').grid(row=3, column=1, sticky='ew', pady=2)
 
         ttk.Label(self.settings_frame, text='Klasa okna gry:').grid(row=4, column=0, sticky='w', padx=(0, 8), pady=2)
         self.game_window_class_var = tk.StringVar(value=str(self.user_config.get('game_window_class', '')))
@@ -611,6 +625,25 @@ class TradePanel:
         self._autosave_job = None
         self._watch_settings(self.settings_frame)
 
+    # --- Podpowiedzi w polach ---
+    def _suggest(self, parent, var: tk.StringVar, kind: str, width: Optional[int] = None,
+                 on_select: Optional[Callable[[str], None]] = None,
+                 system_var: Optional[tk.StringVar] = None) -> 'tce.SuggestEntry':
+        """Pole z listą podpowiedzi: 'system' / 'station' (stacje z system_var) / 'commodity' / 'mineral'."""
+        def recent() -> list[str]:
+            ctx = self.context()
+            return [n for n in (ctx['system'], self.user_config.get('journey_target_system', '')) if n]
+
+        sources = {
+            'system': (lambda t: suggest.recent_first(recent(), suggest.system_names(t), t), True),
+            'station': (lambda t: self._station_names(system_var.get() if system_var else '', t), True),
+            'commodity': (lambda t: suggest.filter_names(self._catalog.commodities, t), False),
+            'mineral': (lambda t: suggest.filter_names(self._catalog.minerals, t), False),
+        }
+        source, remote = sources[kind]
+        kw = {'width': width} if width else {}
+        return tce.SuggestEntry(parent, source, var, self.fonts, remote=remote, on_select=on_select, **kw)
+
     # --- Eksploracja: Guardian ---
     def _build_guardian_tab(self) -> None:
         self.tab_guardian = ttk.Frame(self.notebook)
@@ -621,7 +654,8 @@ class TradePanel:
         bar = ttk.Frame(self.tab_guardian)
         bar.pack(fill=tk.X, padx=10, pady=(10, 4))
         ttk.Label(bar, text='Od systemu:').pack(side=tk.LEFT)
-        ttk.Entry(bar, textvariable=self.guardian_system_var, width=24).pack(side=tk.LEFT, padx=(4, 10))
+        self._suggest(bar, self.guardian_system_var, 'system', 24,
+                      on_select=lambda _v: self.refresh_guardian_tab()).pack(side=tk.LEFT, padx=(4, 10))
         ttk.Label(bar, text='Szukam:').pack(side=tk.LEFT)
         kind = ttk.Combobox(bar, textvariable=self.guardian_kind_var, values=list(guardian.FILTERS.values()),
                             width=22, state='readonly')
@@ -1407,11 +1441,11 @@ class TradePanel:
         self.ov_to_station_var = tk.StringVar(value='')
         entry = ttk.Frame(self.tab_overview)
         entry.pack(fill=tk.X, padx=10, pady=(10, 4))
-        for label, var, width in (('Skąd:', self.ov_from_system_var, 16), ('', self.ov_from_station_var, 20),
-                                  ('Dokąd:', self.ov_to_system_var, 16), ('', self.ov_to_station_var, 20)):
-            if label:
-                ttk.Label(entry, text=label).pack(side=tk.LEFT)
-            ttk.Entry(entry, textvariable=var, width=width).pack(side=tk.LEFT, padx=(4, 8))
+        for label, system_var, station_var in (('Skąd:', self.ov_from_system_var, self.ov_from_station_var),
+                                               ('Dokąd:', self.ov_to_system_var, self.ov_to_station_var)):
+            ttk.Label(entry, text=label).pack(side=tk.LEFT)
+            self._suggest(entry, system_var, 'system', 16).pack(side=tk.LEFT, padx=(4, 8))
+            self._suggest(entry, station_var, 'station', 20, system_var=system_var).pack(side=tk.LEFT, padx=(4, 8))
         self.ov_btn = ttk.Button(entry, text='Porównaj', command=self.refresh_overview_tab)
         self.ov_btn.pack(side=tk.LEFT)
 
@@ -1866,7 +1900,6 @@ class TradePanel:
             label = bp.label if bp.label not in self._blueprints else f'{bp.label} ({bp.key})'
             self._blueprints[label] = bp
         labels = sorted(self._blueprints)
-        self.eng_blueprint_combo.config(values=labels)
         if not labels or not table:
             self.eng_header.set('Nie udało się pobrać danych blueprintów/materiałów (brak sieci i brak cache)', '')
             return
