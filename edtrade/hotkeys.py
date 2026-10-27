@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 BAR_TARGETS = ("top_bar", "bottom_bar")
 ACTION_TARGETS = ("copy_target",)  # kopiuj cel do schowka (drugi raz w kilka sekund: stacja ↔ system)
 PANEL_PAGES = ("route", "nearby", "system", "materials", "mining", "commodity", "market", "journey",
-               "engineering", "settings")
+               "engineering", "guardian", "settings")
 TARGETS = BAR_TARGETS + ACTION_TARGETS + PANEL_PAGES
 
 DEFAULT_MODIFIER = "Shift"

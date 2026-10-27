@@ -17,7 +17,7 @@ from .config import load_user_config, save_user_config
 from . import materials as mats
 from . import tce_theme as tce
 from .checklist import load_commodity_names
-from . import assess, clipboard
+from . import assess, bottom_bar, clipboard, guardian
 from . import trade as trade_mod
 from .filters import filter_from_config
 from .hotkeys import DEFAULT_MODIFIER, MODIFIERS, PANEL_PAGES, slot_geometry, slots_from_config
@@ -42,6 +42,8 @@ PAGE_HINTS = {
     'Blueprinty': 'Czego brakuje do ulepszenia — stan materiałów z journala.',
     'Sesja': 'Zarobki z tej sesji gry (od uruchomienia gry), liczone z journala. Prawy klik: rynek stacji.',
     'Ustawienia': 'Filtry rynków, wygląd paska i panelu. Zmiany zapisują się same.',
+    'Guardian': 'Najbliższe ruiny i struktury Guardian (Spansh). Dwuklik: kopiuj system · '
+                'zaznacz wiersz: współrzędne miejsc na planecie.',
 }
 PAD_FILTER_LABELS = {'auto': 'Automatycznie (ze statku)', 'large': 'Tylko pad L', 'all': 'Wszystkie pady'}
 MARKET_TYPE_LABELS = {'all': 'Wszystkie', 'space': 'Tylko kosmiczne', 'planetary': 'Tylko planetarne'}
@@ -141,6 +143,8 @@ class TradePanel:
         self.refresh_tab = self.title_bar.add_tab('REFRESH', self.fonts, command=self._refresh_clicked)
         # [KOPIUJ CEL] / Ctrl+C: cel bieżącego hopu do schowka; drugi raz w ciągu kilku sekund — stacja ↔ system
         self.on_copy_target: Optional[Callable[[], None]] = None
+        # Dolny pasek (main.py): on_bar_page(klucz, zakładka, linia1, linia2, kolor) — okazje i ładunek w rotacji
+        self.on_bar_page: Optional[Callable[..., None]] = None
         self.title_bar.add_tab('KOPIUJ CEL', self.fonts, command=self._copy_target_clicked)
         self.window.bind('<Control-c>', lambda _e: self._copy_target_clicked(), add='+')
         self._context_lock = threading.Lock()
@@ -438,6 +442,8 @@ class TradePanel:
         self.window.after(200, self._start_engineering_data_load)
 
         # --- Zakładka Ustawienia ---
+        self._build_guardian_tab()
+
         self.tab_settings = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_settings, text='Ustawienia')
 
@@ -590,6 +596,7 @@ class TradePanel:
                         self.tab_session]),
             ('Nawigacja', [self.tab_journey, self.tab_system]),
             ('Inżynieria', [self.tab_materials, self.tab_mining, self.tab_engineering]),
+            ('Eksploracja', [self.tab_guardian]),
             ('Ustawienia', [self.tab_settings]),
         ], on_change=self._page_changed)
         self.nav.pack(fill=tk.X, padx=8, pady=(6, 0), before=self.notebook)
@@ -603,6 +610,98 @@ class TradePanel:
         # Autozapis Ustawień: każda zmiana pola zapisuje config (po 0.5 s spokoju) — przycisk Zapisz niepotrzebny
         self._autosave_job = None
         self._watch_settings(self.settings_frame)
+
+    # --- Eksploracja: Guardian ---
+    def _build_guardian_tab(self) -> None:
+        self.tab_guardian = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_guardian, text='Guardian')
+        self.guardian_system_var = tk.StringVar(value='Sol')
+        self.guardian_kind_var = tk.StringVar(value=guardian.FILTERS['all'])
+        self._guardian_searched: Optional[tuple] = None
+        bar = ttk.Frame(self.tab_guardian)
+        bar.pack(fill=tk.X, padx=10, pady=(10, 4))
+        ttk.Label(bar, text='Od systemu:').pack(side=tk.LEFT)
+        ttk.Entry(bar, textvariable=self.guardian_system_var, width=24).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(bar, text='Szukam:').pack(side=tk.LEFT)
+        kind = ttk.Combobox(bar, textvariable=self.guardian_kind_var, values=list(guardian.FILTERS.values()),
+                            width=22, state='readonly')
+        kind.pack(side=tk.LEFT, padx=(4, 10))
+        kind.bind('<<ComboboxSelected>>', lambda _e: self.refresh_guardian_tab())
+        self.guardian_btn = ttk.Button(bar, text='Szukaj', command=self.refresh_guardian_tab)
+        self.guardian_btn.pack(side=tk.LEFT)
+        self.guardian_header = tce.SectionHeader(self.tab_guardian, 'Ruiny i struktury Guardian', self.fonts)
+        self.guardian_header.pack(fill=tk.X, padx=10, pady=(8, 2))
+        self.guardian_table = tce.DataTable(self.tab_guardian, [
+            ('distance', 'Odl.', 70, 'e'), ('system', 'System', 190, 'w'), ('body', 'Planeta', 90, 'w'),
+            ('arrival', 'LS', 70, 'e'), ('gravity', 'G', 50, 'e'), ('sites', 'Co tu jest', 230, 'w'),
+            ('rewards', 'Do zdobycia', 300, 'w')], height=14)
+        self.guardian_table.pack(fill=tk.BOTH, expand=True, padx=10, pady=(2, 0))
+        self.guardian_detail = tk.Label(self.tab_guardian, text='', bg=tce.BG, fg=tce.ORANGE, font=self.fonts.body_bold,
+                                        anchor='w', justify=tk.LEFT)
+        self.guardian_detail.pack(fill=tk.X, padx=12, pady=(4, 10))
+        self.guardian_detail.bind('<Configure>', lambda e: self.guardian_detail.config(wraplength=max(200, e.width - 10)))
+
+    def _guardian_kind(self) -> str:
+        label = self.guardian_kind_var.get()
+        return next((k for k, v in guardian.FILTERS.items() if v == label), 'all')
+
+    def _guardian_auto_search(self) -> None:
+        """Otwarcie strony: szukaj sam, jeśli dla tego systemu i filtra jeszcze nie szukaliśmy."""
+        key = (self.guardian_system_var.get().strip().lower(), self._guardian_kind())
+        if key[0] and key != self._guardian_searched and str(self.guardian_btn['state']) != tk.DISABLED:
+            self.refresh_guardian_tab()
+
+    def refresh_guardian_tab(self) -> None:
+        system_name = self.guardian_system_var.get().strip()
+        if not system_name:
+            return
+        kind = self._guardian_kind()
+        self._guardian_searched = (system_name.lower(), kind)
+        self.guardian_btn.config(state=tk.DISABLED)
+        self.guardian_header.set(f'{guardian.FILTERS[kind]} wokół {system_name} — szukam...', '')
+        threading.Thread(target=self._guardian_worker, args=(system_name, kind), daemon=True).start()
+
+    def _guardian_worker(self, system_name: str, kind: str) -> None:
+        try:
+            bodies, error = guardian.search_guardian_sites(system_name, kind), ''
+        except Exception as e:
+            logger.exception('Guardian: wyszukiwanie')
+            bodies, error = [], str(e)
+        try:
+            self.window.after(0, self._guardian_done, system_name, kind, bodies, error)
+        except Exception:
+            pass
+
+    def _guardian_done(self, system_name: str, kind: str, bodies: list, error: str) -> None:
+        self.guardian_btn.config(state=tk.NORMAL)
+        short_body = lambda b: b.body[len(b.system):].strip() if b.body.lower().startswith(b.system.lower()) else b.body
+        self.guardian_table.set_rows(
+            [(f'{b.distance_ly:,.1f}', b.system, short_body(b), f'{b.distance_ls:,.0f}', f'{b.gravity:.2f}',
+              b.summary, b.rewards_short) for b in bodies],
+            sort_values=[{'distance': b.distance_ly, 'arrival': b.distance_ls, 'gravity': b.gravity} for b in bodies],
+            payloads=bodies)
+        label = guardian.FILTERS[kind]
+        if error:
+            self.guardian_header.set(f'{label} wokół {system_name} — błąd: {error}', '')
+        else:
+            self.guardian_header.set(f'{label} wokół {system_name}', f'{len(bodies)} planet')
+        self._show_guardian_detail(bodies[0] if bodies else None)
+
+    def _show_guardian_detail(self, body) -> None:
+        """Wszystkie miejsca na planecie ze współrzędnymi (lat, lon) — do nawigacji na powierzchni."""
+        if not isinstance(body, guardian.GuardianBody):
+            self.guardian_detail.config(text='')
+            return
+        lines = [f'{body.body} · {body.distance_ls:,.0f} LS · grawitacja {body.gravity:.2f} G'
+                 + ('' if body.landable else ' · NIE DO LĄDOWANIA')]
+        lines += [f'  {site.label}: {site.coords}' + (f' — {guardian.BLUEPRINT_LABELS[site.blueprint]}' if site.blueprint else '')
+                  for site in body.sites]
+        if body.features:
+            lines.append(f'  Na miejscu: {body.features_text}')
+        lines.append(f'  Do zdobycia: {body.rewards}')
+        if not body.sites:
+            lines.append('  Brak wpisów Codexu — miejsce znajdziesz skanerem DSS (sygnał Guardian).')
+        self.guardian_detail.config(text='\n'.join(lines).upper())
 
     def _eddn_tick(self) -> None:
         """Status EDDN co 30 s: połączenie i ile rynków jest w lokalnej bazie."""
@@ -788,6 +887,9 @@ class TradePanel:
 
     def _context_changed(self, keys: set) -> None:
         self._render_context()
+        system = self.context()['system']
+        if 'system' in keys and system and hasattr(self, 'guardian_system_var'):
+            self.guardian_system_var.set(system)  # Guardian liczy od miejsca, w którym jesteś (także w locie)
         # Ocena ładunku zależy od ładowni, stacji (cena "sprzedaj tu") i rynku na żywo — wszystko połączone
         if keys & {'cargo', 'station', 'live_market'} and hasattr(self, 'nearby_cargo_table'):
             self.refresh_cargo_sales()
@@ -831,6 +933,8 @@ class TradePanel:
             self.hint_label.config(text=self._hint_text.upper(), fg=tce.ORANGE_DIM)
         self.user_config['panel_page'] = title
         self._schedule_layout_save()
+        if title == 'Guardian':
+            self._guardian_auto_search()
 
     def _schedule_layout_save(self, event=None) -> None:
         """Zapamietaj rozmiar/pozycje okna i strone — z opoznieniem, zeby przeciaganie nie pisalo pliku co piksel."""
@@ -920,6 +1024,9 @@ class TradePanel:
         self._bind_row_actions(self.materials_table, lambda p, v: (v[1], v[0]))
         self._bind_row_actions(self.system_table, lambda p, v: (self.system_entry_var.get().strip(), v[0]))
         self._bind_row_actions(self.journey_table, lambda p, v: (v[1], ''))
+        self._bind_row_actions(self.guardian_table, lambda p, v: (p.system, '') if p else None)
+        self.guardian_table.tree.bind('<<TreeviewSelect>>',
+                                      lambda _e: self._show_guardian_detail(self.guardian_table.selected_payload()), add='+')
         self._bind_row_actions(self.session_table, lambda p, v: (p.system, p.station) if p and p.system else None)
 
     def _open_settings(self) -> None:
@@ -1534,6 +1641,7 @@ class TradePanel:
                                        payloads=trades,
                                        tags=[tce.verdict_tag(v.verdict, v.shade) for v in verdicts])
             self._show_swot(trades[0] if trades else None)
+            self._bar_nearby(station_name, trades, verdicts, names, error)
             hold = f'ładownia {capacity} t' if capacity else 'ładownia 304 t (domyślnie — czekam na Loadout)'
             if error:
                 self.nearby_header.set(f'{station_name} ({system_name}) — błąd: {error}', '')
@@ -1545,6 +1653,35 @@ class TradePanel:
                 self.nearby_header.set(f'{station_name}: brak zyskownych okazji w zasięgu', f'{hold} · {filter_text}')
         self._render_cargo()
 
+    def _bar_page(self, key: str, tab: str, lines: tuple, color: str = tce.ORANGE) -> None:
+        if self.on_bar_page is not None:
+            try:
+                self.on_bar_page(key, tab, lines[0], lines[1], color)
+            except Exception:
+                logger.exception('Dolny pasek: strona %s', key)
+
+    def _bar_nearby(self, station_name: str, trades: list, verdicts: list, names: dict, error: str) -> None:
+        if error or not trades:
+            self._bar_page('okolica', '', ('', ''))
+            return
+        items = [(v.badge, names.get(t.commodity.lower(), t.commodity), t.sell_station, t.sell_system,
+                  t.profit_per_unit, t.profit_per_hour) for t, v in zip(trades, verdicts)]
+        first = verdicts[0]
+        self._bar_page('okolica', 'OKAZJE W OKOLICY', bottom_bar.nearby_lines(items),
+                       tce.verdict_color(first.verdict, first.shade))
+
+    def _bar_cargo(self, rows: list, payloads: list) -> None:
+        items, color = [], tce.ORANGE
+        for row, payload in zip(rows, payloads):
+            advice = self._assessments.get(id(payload))
+            if advice is None:
+                continue
+            where = {assess.SELL_HERE: 'tutaj', assess.SELL_THERE: getattr(payload, 'sell_station', '')}.get(advice.action, '')
+            items.append((advice.badge, row[1], row[2], where))
+            if len(items) == 1:
+                color = tce.verdict_color(advice.verdict, advice.shade)
+        self._bar_page('ladunek', 'TWÓJ ŁADUNEK', bottom_bar.cargo_lines(items) if items else ('', ''), color)
+
     def refresh_cargo_sales(self) -> None:
         """Gdzie sprzedac to, co jest w ladowni (z journala) — wzgledem biezacego systemu."""
         ctx = self.context()
@@ -1554,6 +1691,7 @@ class TradePanel:
         if not cargo:
             self.nearby_cargo_table.set_rows([])
             self.nearby_cargo_header.set('Twój ładunek — gdzie sprzedać', 'ładownia pusta')
+            self._bar_page('ladunek', '', ('', ''))
             return
         if not reference:
             return
@@ -1652,6 +1790,7 @@ class TradePanel:
             payloads.append(payload)
             self._assessments[id(payload)] = advice
         self.nearby_cargo_table.set_rows(rows, sort_values=sorts, tags=tags, payloads=payloads)
+        self._bar_cargo(rows, payloads)
         holds = sum(1 for p in payloads if self._assessments[id(p)].action == assess.HOLD)
         right = f'razem {total:,} cr' + (f' · {holds} × HOLD' if holds else '')
         self.nearby_cargo_header.set(f'Twój ładunek — HOLD czy SELL? (wokół {reference})',

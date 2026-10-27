@@ -1,0 +1,504 @@
+{
+ "count": 3,
+ "results": [
+  {
+   "name": "Synuefe XR-H d11-102 1 b",
+   "system_name": "Synuefe XR-H d11-102",
+   "system_id64": 3515254557027,
+   "distance": 0.0,
+   "distance_to_arrival": 799.00839,
+   "gravity": 0.133058937493627,
+   "is_landable": true,
+   "subtype": "Rocky body",
+   "atmosphere": "No atmosphere",
+   "landmarks": [
+    {
+     "id": 3200200,
+     "latitude": -47.51194,
+     "longitude": 134.66359,
+     "subtype": "Guardian Codex",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200200,
+     "latitude": -46.5754,
+     "longitude": 134.00992,
+     "subtype": "Guardian Codex",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200200,
+     "latitude": -46.47628,
+     "longitude": 133.94547,
+     "subtype": "Guardian Codex",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200200,
+     "latitude": -46.47557,
+     "longitude": 135.55205,
+     "subtype": "Guardian Codex",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200200,
+     "latitude": -46.24175,
+     "longitude": 138.12563,
+     "subtype": "Guardian Codex",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200200,
+     "latitude": -46.029984,
+     "longitude": 134.355438,
+     "subtype": "Guardian Codex",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200200,
+     "latitude": -45.895454,
+     "longitude": 134.444382,
+     "subtype": "Guardian Codex",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200200,
+     "latitude": -45.653519,
+     "longitude": 134.578506,
+     "subtype": "Guardian Codex",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200200,
+     "latitude": -45.476955,
+     "longitude": 134.671494,
+     "subtype": "Guardian Codex",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200200,
+     "latitude": -44.845924,
+     "longitude": 135.11586,
+     "subtype": "Guardian Codex",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200200,
+     "latitude": -32.0,
+     "longitude": -129.0,
+     "subtype": "Guardian Codex",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200200,
+     "latitude": -32.0,
+     "longitude": -125.0,
+     "subtype": "Guardian Codex",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200200,
+     "latitude": -32.0,
+     "longitude": -124.0,
+     "subtype": "Guardian Codex",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200200,
+     "latitude": -31.80784,
+     "longitude": -128.95572,
+     "subtype": "Guardian Codex",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200500,
+     "latitude": -46.58949,
+     "longitude": 133.96236,
+     "subtype": "Guardian Relic Tower",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200500,
+     "latitude": -32.0,
+     "longitude": -129.0,
+     "subtype": "Guardian Relic Tower",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200500,
+     "latitude": -32.0,
+     "longitude": -126.0,
+     "subtype": "Guardian Relic Tower",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200500,
+     "latitude": -31.78758,
+     "longitude": -128.91966,
+     "subtype": "Guardian Relic Tower",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 34540,
+     "latitude": -31.823042947369,
+     "longitude": -128.99136592484,
+     "subtype": "Tourist Beacon",
+     "type": "Tourist Beacon",
+     "value": 0
+    },
+    {
+     "id": 34539,
+     "latitude": -46.572834691572,
+     "longitude": 133.96251797448,
+     "subtype": "Unknown",
+     "type": "Guardian Ruin",
+     "value": 0
+    },
+    {
+     "id": 352,
+     "latitude": -31.770939028436,
+     "longitude": -128.93565918503,
+     "subtype": "Unknown",
+     "type": "Guardian Ruin",
+     "value": 0
+    }
+   ],
+   "signals": [
+    {
+     "count": 13,
+     "name": "Planetary Mining Location"
+    },
+    {
+     "count": 1,
+     "name": "Guardian"
+    },
+    {
+     "count": 2,
+     "name": "Human"
+    }
+   ],
+   "updated_at": "2026-10-26T17:02:29Z"
+  },
+  {
+   "name": "IC 2391 Sector HG-X b1-8 C 2",
+   "system_name": "IC 2391 Sector HG-X b1-8",
+   "system_id64": 18271193277841,
+   "distance": 252.956118430772,
+   "distance_to_arrival": 18963.794189,
+   "gravity": 0.212154175588865,
+   "is_landable": true,
+   "subtype": "High metal content world",
+   "atmosphere": "No atmosphere",
+   "landmarks": [
+    {
+     "id": 3200200,
+     "latitude": -45.0,
+     "longitude": 34.0,
+     "subtype": "Guardian Codex",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200200,
+     "latitude": -44.51994,
+     "longitude": 34.33589,
+     "subtype": "Guardian Codex",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200200,
+     "latitude": -44.0,
+     "longitude": 34.0,
+     "subtype": "Guardian Codex",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200300,
+     "latitude": -45.0,
+     "longitude": 34.0,
+     "subtype": "Guardian Data Terminal",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200300,
+     "latitude": -44.51322,
+     "longitude": 34.3298,
+     "subtype": "Guardian Data Terminal",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200300,
+     "latitude": -44.0,
+     "longitude": 34.0,
+     "subtype": "Guardian Data Terminal",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200400,
+     "latitude": -45.0,
+     "longitude": 34.0,
+     "subtype": "Guardian Pylon",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200400,
+     "latitude": -44.51262,
+     "longitude": 34.32932,
+     "subtype": "Guardian Pylon",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200400,
+     "latitude": -44.0,
+     "longitude": 34.0,
+     "subtype": "Guardian Pylon",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200500,
+     "latitude": -45.0,
+     "longitude": 34.0,
+     "subtype": "Guardian Relic Tower",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200500,
+     "latitude": -44.50747,
+     "longitude": 34.3467,
+     "subtype": "Guardian Relic Tower",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200500,
+     "latitude": -44.0,
+     "longitude": 34.0,
+     "subtype": "Guardian Relic Tower",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200600,
+     "latitude": -45.0,
+     "longitude": 34.0,
+     "subtype": "Guardian Sentinel",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 3200600,
+     "latitude": -44.52187,
+     "longitude": 34.33869,
+     "subtype": "Guardian Sentinel",
+     "type": "Guardian",
+     "value": 0
+    },
+    {
+     "id": 5852,
+     "latitude": -44.515552666666,
+     "longitude": 34.339245912284,
+     "subtype": "Robolobster",
+     "type": "Guardian Structure",
+     "value": 0
+    },
+    {
+     "id": 2100201,
+     "latitude": -51.0,
+     "longitude": -157.0,
+     "subtype": "Roseum Brain Tree",
+     "type": "Brain Tree",
+     "value": 1593700
+    },
+    {
+     "id": 2100201,
+     "latitude": -45.20915,
+     "longitude": -142.81017,
+     "subtype": "Roseum Brain Tree",
+     "type": "Brain Tree",
+     "value": 1593700
+    },
+    {
+     "id": 2100201,
+     "latitude": -44.56995,
+     "longitude": 34.686447,
+     "subtype": "Roseum Brain Tree",
+     "type": "Brain Tree",
+     "value": 1593700
+    },
+    {
+     "id": 2100201,
+     "latitude": -44.5459,
+     "longitude": 34.36092,
+     "subtype": "Roseum Brain Tree",
+     "type": "Brain Tree",
+     "value": 1593700
+    },
+    {
+     "id": 2100201,
+     "latitude": -44.497414,
+     "longitude": 34.234276,
+     "subtype": "Roseum Brain Tree",
+     "type": "Brain Tree",
+     "value": 1593700
+    },
+    {
+     "id": 2100201,
+     "latitude": -41.0,
+     "longitude": -32.0,
+     "subtype": "Roseum Brain Tree",
+     "type": "Brain Tree",
+     "value": 1593700
+    },
+    {
+     "id": 2100201,
+     "latitude": -40.0,
+     "longitude": 106.0,
+     "subtype": "Roseum Brain Tree",
+     "type": "Brain Tree",
+     "value": 1593700
+    },
+    {
+     "id": 2100201,
+     "latitude": -6.2534,
+     "longitude": -98.65447,
+     "subtype": "Roseum Brain Tree",
+     "type": "Brain Tree",
+     "value": 1593700
+    },
+    {
+     "id": 2100201,
+     "latitude": -5.0,
+     "longitude": 39.0,
+     "subtype": "Roseum Brain Tree",
+     "type": "Brain Tree",
+     "value": 1593700
+    },
+    {
+     "id": 2100201,
+     "latitude": -4.0,
+     "longitude": -30.0,
+     "subtype": "Roseum Brain Tree",
+     "type": "Brain Tree",
+     "value": 1593700
+    },
+    {
+     "id": 2100201,
+     "latitude": 22.068731,
+     "longitude": -178.875793,
+     "subtype": "Roseum Brain Tree",
+     "type": "Brain Tree",
+     "value": 1593700
+    },
+    {
+     "id": 2100201,
+     "latitude": 55.52054,
+     "longitude": 139.32805,
+     "subtype": "Roseum Brain Tree",
+     "type": "Brain Tree",
+     "value": 1593700
+    },
+    {
+     "id": 2100201,
+     "latitude": 65.0,
+     "longitude": -171.0,
+     "subtype": "Roseum Brain Tree",
+     "type": "Brain Tree",
+     "value": 1593700
+    },
+    {
+     "id": 2100201,
+     "latitude": 75.0,
+     "longitude": -41.0,
+     "subtype": "Roseum Brain Tree",
+     "type": "Brain Tree",
+     "value": 1593700
+    },
+    {
+     "id": 1400102,
+     "latitude": 31.0,
+     "longitude": 179.0,
+     "subtype": "Sulphur Dioxide Fumarole",
+     "type": "Fumarole",
+     "value": 0
+    },
+    {
+     "id": 1400402,
+     "latitude": -23.77603,
+     "longitude": -9.261576,
+     "subtype": "Sulphur Dioxide Gas Vent",
+     "type": "Gas Vent",
+     "value": 0
+    }
+   ],
+   "signals": [
+    {
+     "count": 20,
+     "name": "Planetary Mining Location"
+    },
+    {
+     "count": 1,
+     "name": "Biological"
+    },
+    {
+     "count": 3,
+     "name": "Geological"
+    },
+    {
+     "count": 1,
+     "name": "Guardian"
+    }
+   ],
+   "updated_at": "2026-10-25T10:22:25Z"
+  },
+  {
+   "name": "Novas A 6",
+   "system_name": "Novas",
+   "system_id64": 5306734088930,
+   "distance": 292.504737541762,
+   "distance_to_arrival": 477.068306,
+   "gravity": 1.09938003466911,
+   "is_landable": false,
+   "subtype": "Earth-like world",
+   "atmosphere": "No atmosphere",
+   "landmarks": null,
+   "signals": [
+    {
+     "count": 1,
+     "name": "Guardian"
+    },
+    {
+     "count": 5,
+     "name": "Human"
+    }
+   ],
+   "updated_at": "2026-10-02T11:49:22Z"
+  }
+ ]
+}

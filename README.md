@@ -50,6 +50,13 @@ clunky workflow. The game is never automated: the app only reads the journal and
 
 ![Session](docs/screenshots/session.png)
 
+**Guardian exploration** — nearest Guardian ruins and structures from your current system (also in flight),
+filtered by what you want: ruins (artefacts and obelisk data), structures, or weapon / module / fighter blueprints.
+Each planet lists every site with its surface coordinates, Relic Towers, Sentinels and data terminals.
+Structure → blueprint type follows Canonn community guides.
+
+**Bottom bar** rotates every 8 s: destination station details, top nearby trades and HOLD / SELL advice for your cargo.
+
 **More panels** — station market with prices vs average, commodity search (best buy/sell nearby), trade
 overview (current station | trade advisor | destination), jump route planner, system stations, material
 traders, mining hotspots, engineering blueprint shopping list from your materials.
@@ -73,7 +80,7 @@ font size, verdict icons/labels, clipboard, risk profile) are saved in `~/.confi
 
 ## Data sources
 
-- [Spansh](https://spansh.co.uk) — trade routes and jump routes
+- [Spansh](https://spansh.co.uk) — trade routes, jump routes and Guardian sites (body search with Codex landmarks)
 - [Ardent Insight](https://ardent-insight.com) — station markets and nearby buyers/sellers
 - [EDCD FDevIDs](https://github.com/EDCD/FDevIDs) and [coriolis-data](https://github.com/EDCD/coriolis-data) —
   commodity/material names and blueprints, downloaded at runtime and cached (not redistributed)

@@ -236,6 +236,8 @@ class EDTradeOverlayApp:
         self._refresh_lock = threading.Lock()
         if self.panel is not None:
             self.panel.on_refresh = self.refresh
+            if self.bottom_bar is not None:
+                self.panel.on_bar_page = self.bottom_bar.set_page
             self.panel.on_copy_target = lambda mode_change=False: self.copy_current_target(
                 alternate=not mode_change)
         self._destination_key: Optional[tuple] = None
