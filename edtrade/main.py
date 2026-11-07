@@ -27,7 +27,8 @@ from .session import SessionLedger
 from .pilot import PilotCalibration
 from .price_db import PriceDB
 from .eddn import EDDNListener
-from . import assess, verify, clipboard
+from . import assess, verify, clipboard, i18n
+from . import __version__
 from . import trade as trade_module
 from datetime import datetime, timezone
 from .bottom_bar import BottomBar
@@ -64,58 +65,59 @@ DEFAULT_JOURNAL_DIR = (
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="ED Trade Overlay MVP")
+    parser = argparse.ArgumentParser(prog="edto", description="Elite Dangerous trade overlay and panel (reads the game journal).")
     parser.add_argument(
         "--td-dir",
         type=Path,
         default=DEFAULT_TD_DIR,
-        help="Ścieżka do katalogu Trade Dangerous",
+        help="Trade Dangerous directory (optional, legacy route engine)",
     )
     parser.add_argument(
         "--journal-dir",
         type=Path,
         default=DEFAULT_JOURNAL_DIR,
-        help="Ścieżka do katalogu z journalami ED",
+        help="Elite Dangerous journal directory (found automatically under Proton)",
     )
     parser.add_argument(
         "--capacity",
         type=float,
         default=304.0,
-        help="Pojemność ładunkowa statku (t)",
+        help="Ship cargo capacity in t (default: from the journal Loadout)",
     )
     parser.add_argument(
         "--credits",
         type=int,
         default=None,
-        help="Dostępne kredyty (cr); domyślnie saldo z journala (LoadGame), a gdy nieznane — bez limitu",
+        help="Available credits (default: balance from the journal, no limit when unknown)",
     )
     parser.add_argument(
         "--ly-per",
         type=float,
         default=32.0,
-        help="Maks. zasięg skoku FSD (ly), nadpisze Loadout",
+        help="Max FSD jump range in ly (overrides Loadout)",
     )
     parser.add_argument(
         "--poll-interval",
         type=float,
         default=1.0,
-        help="Interwał sprawdzania journala (s)",
+        help="Journal poll interval (s)",
     )
     parser.add_argument(
         "--log-level",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         default="INFO",
-        help="Poziom logowania",
+        help="Log level",
     )
     parser.add_argument(
         "--no-overlay",
         action="store_true",
-        help="Uruchom bez overlaya — tylko kalkulacja trasy i log",
+        help="Run without the in-game bar (route calculation and log only)",
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
         "--no-panel",
         action="store_true",
-        help="Nie otwieraj panelu TCE (osobne okno z zakładkami)",
+        help="Do not open the panel window",
     )
     return parser.parse_args()
 
@@ -160,6 +162,8 @@ class EDTradeOverlayApp:
         )
         self._show_overlay = not args.no_overlay
         self.user_config = user_config_module.load_user_config()
+        i18n.set_language(i18n.detect_language(self.user_config.get('language', 'auto')))
+        i18n.install()
         assess.set_display(self.user_config.get('verdict_icons', True), self.user_config.get('verdict_labels', True))
         trade_module.set_risk_profile(str(self.user_config.get('risk_profile', 'auto')))
         trade_module.set_security_prefs(float(self.user_config.get('security_weight', 0.5)),

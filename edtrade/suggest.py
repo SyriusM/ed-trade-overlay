@@ -18,7 +18,7 @@ from .materials import fetch_cached
 logger = logging.getLogger(__name__)
 
 SPANSH_SYSTEM_NAMES_URL = "https://spansh.co.uk/api/systems/field_values/system_names"
-HEADERS = {"User-Agent": "EdTradeOverlay/0.1", "Accept": "application/json"}
+HEADERS = {"User-Agent": "EdTradeOverlay/1.0", "Accept": "application/json"}
 FDEVIDS_COMMODITY_URL = "https://raw.githubusercontent.com/EDCD/FDevIDs/master/commodity.csv"
 FDEVIDS_RARE_URL = "https://raw.githubusercontent.com/EDCD/FDevIDs/master/rare_commodity.csv"
 MINERAL_CATEGORIES = frozenset({"Minerals", "Metals"})

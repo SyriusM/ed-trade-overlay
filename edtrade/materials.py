@@ -73,7 +73,7 @@ def fetch_cached(url: str, filename: str, cache_dir: Optional[Path] = None) -> O
     if path.is_file() and time.time() - path.stat().st_mtime < CACHE_MAX_AGE_S:
         return path.read_text(encoding="utf-8")
     try:
-        resp = requests.get(url, timeout=30, headers={"User-Agent": "EdTradeOverlay/0.1"})
+        resp = requests.get(url, timeout=30, headers={"User-Agent": "EdTradeOverlay/1.0"})
         resp.raise_for_status()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(resp.text, encoding="utf-8")

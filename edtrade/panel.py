@@ -17,7 +17,7 @@ from .config import load_user_config, save_user_config
 from . import materials as mats
 from . import tce_theme as tce
 from .checklist import load_commodity_names
-from . import assess, bottom_bar, clipboard, guardian, suggest
+from . import assess, bottom_bar, clipboard, guardian, i18n, suggest
 from . import trade as trade_mod
 from .filters import filter_from_config
 from .hotkeys import DEFAULT_MODIFIER, MODIFIERS, PANEL_PAGES, slot_geometry, slots_from_config
@@ -121,6 +121,9 @@ class TradePanel:
         self.bar_margins = bar_margins
         self._page_slot: Optional[str] = None
         self.window.title(PANEL_TITLE)
+        for labels in (PAD_FILTER_LABELS, MARKET_TYPE_LABELS, COPY_TARGET_LABELS, trade_mod.RISK_PROFILES,
+                       trade_mod.RANK_MODES, guardian.FILTERS):
+            labels.update({key: i18n.tr(label) for key, label in labels.items()})
         geometry = str(self.user_config.get('panel_geometry', '1100x700'))
         self.window.geometry(geometry if re.fullmatch(r'\d+x\d+([+-]-?\d+[+-]-?\d+)?', geometry) else '1100x700')
         self._layout_save_job = None
@@ -590,6 +593,16 @@ class TradePanel:
         self.eddn_status.pack(side=tk.LEFT, padx=(16, 0))
         self.window.after(2000, self._eddn_tick)  # main uruchamia nasłuch po utworzeniu panelu
 
+        # Język interfejsu (zmiana działa po restarcie) — etykieta dwujęzyczna, żeby dało się wrócić
+        self.language_var = tk.StringVar(value=i18n.LANGUAGES.get(str(self.user_config.get('language', 'auto')),
+                                                                  i18n.LANGUAGES['auto']))
+        ttk.Label(self.settings_frame, text='Język / Language:').grid(row=19, column=0, sticky='w', padx=(0, 8), pady=2)
+        language_line = ttk.Frame(self.settings_frame)
+        language_line.grid(row=19, column=1, sticky='w', pady=2)
+        ttk.Combobox(language_line, textvariable=self.language_var, values=list(i18n.LANGUAGES.values()),
+                     state='readonly', width=16).pack(side=tk.LEFT)
+        ttk.Label(language_line, text='(restart)').pack(side=tk.LEFT, padx=(8, 0))
+
         # Zapisz zawsze widoczny na dole strony (ustawień jest więcej niż wysokość okna)
         footer = ttk.Frame(self.tab_settings)
         footer.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=(0, 8), before=self.settings_frame)
@@ -616,7 +629,7 @@ class TradePanel:
         self.nav.pack(fill=tk.X, padx=8, pady=(6, 0), before=self.notebook)
         self.hint_label.pack(fill=tk.X, padx=8, pady=(2, 0), before=self.notebook)
         pages = {self.notebook.tab(t, 'text'): t for t in self.notebook.tabs()}
-        start_page = pages.get(saved_page)
+        start_page = pages.get(i18n.tr(saved_page))
         if start_page:
             self.nav.select_frame(start_page)
         self._bind_all_row_actions()
@@ -824,14 +837,14 @@ class TradePanel:
         modifier_line = ttk.Frame(box)
         modifier_line.grid(row=1, column=0, columnspan=3, sticky='w', pady=(4, 6))
         ttk.Label(modifier_line, text='Modyfikator:').pack(side=tk.LEFT)
-        self._modifier_labels = {m: (m or 'brak') for m in MODIFIERS}
+        self._modifier_labels = {m: (m or i18n.tr('brak')) for m in MODIFIERS}
         self.hotkey_modifier_var = tk.StringVar(value=self._modifier_labels.get(
             str(self.user_config.get('hotkey_modifier', DEFAULT_MODIFIER)), DEFAULT_MODIFIER))
         ttk.Combobox(modifier_line, textvariable=self.hotkey_modifier_var, values=list(self._modifier_labels.values()),
                      state='readonly', width=14).pack(side=tk.LEFT, padx=(6, 0))
         self._target_labels = {'': '—'}
-        self._target_labels.update({'top_bar': 'Górny pasek', 'bottom_bar': 'Dolny pasek',
-                                    'copy_target': 'Kopiuj cel (2× stacja/system)'})
+        self._target_labels.update({'top_bar': i18n.tr('Górny pasek'), 'bottom_bar': i18n.tr('Dolny pasek'),
+                                    'copy_target': i18n.tr('Kopiuj cel (2× stacja/system)')})
         self._target_labels.update({page: self.notebook.tab(self.page_frame(page), 'text') for page in PANEL_PAGES})
         slots = slots_from_config(self.user_config)
         self.slot_vars: dict[str, tk.StringVar] = {}
@@ -962,6 +975,7 @@ class TradePanel:
 
     def _page_changed(self, title: str) -> None:
         self.title_bar.set_title(title)
+        title = i18n.source(title)  # Tk ma tytuł w języku interfejsu; klucze (podpowiedzi, config) są po polsku
         self._hint_text = PAGE_HINTS.get(title, '')
         if self._toast_job is None:
             self.hint_label.config(text=self._hint_text.upper(), fg=tce.ORANGE_DIM)
@@ -2039,14 +2053,14 @@ class TradePanel:
         try:
             ship_range = float(ship_range_str)
         except ValueError:
-            self.settings_status_var.set('Błąd: zasięg musi być liczbą.')
+            self.settings_status_var.set(i18n.tr('Błąd: zasięg musi być liczbą.'))
             return
         try:
             max_star = float(self.max_star_var.get().strip().replace(',', '.'))
             if max_star < 0:
                 raise ValueError
         except ValueError:
-            self.settings_status_var.set('Błąd: odległość od gwiazdy musi być liczbą ≥ 0.')
+            self.settings_status_var.set(i18n.tr('Błąd: odległość od gwiazdy musi być liczbą ≥ 0.'))
             return
         try:
             min_profit = int(float(self.min_profit_var.get().strip()))
@@ -2054,14 +2068,14 @@ class TradePanel:
             if min_profit < 0 or max_age < 1:
                 raise ValueError
         except ValueError:
-            self.settings_status_var.set('Błąd: min. zysk ≥ 0, wiek cen ≥ 1 dzień (liczby).')
+            self.settings_status_var.set(i18n.tr('Błąd: min. zysk ≥ 0, wiek cen ≥ 1 dzień (liczby).'))
             return
         try:
             max_hops = int(float(self.max_hops_var.get().strip()))
             if not 1 <= max_hops <= 10:
                 raise ValueError
         except ValueError:
-            self.settings_status_var.set('Błąd: maks. hopów 1–10.')
+            self.settings_status_var.set(i18n.tr('Błąd: maks. hopów 1–10.'))
             return
         pad_filter = next((k for k, v in PAD_FILTER_LABELS.items() if v == self.pad_filter_var.get()), 'auto')
         market_type = next((k for k, v in MARKET_TYPE_LABELS.items() if v == self.market_type_var.get()), 'all')
@@ -2091,16 +2105,17 @@ class TradePanel:
             'avoid_low_security': bool(self.avoid_low_var.get()),
             'verdict_icons': bool(self.verdict_icons_var.get()),
             'verdict_labels': bool(self.verdict_labels_var.get()),
+            'language': next((k for k, v in i18n.LANGUAGES.items() if v == self.language_var.get()), 'auto'),
             **self._hotkey_settings_values(),
         })
 
         # Zapisz do pliku
         try:
             save_user_config(self.user_config, self.config_path)
-            self.settings_status_var.set('Zapisano.')
+            self.settings_status_var.set(i18n.tr('Zapisano.'))
             self._render_context()
         except Exception as e:
-            self.settings_status_var.set(f'Błąd zapisu: {e}')
+            self.settings_status_var.set(i18n.tr(f'Błąd zapisu: {e}'))
 
     def show(self) -> None:
         """Pokaż okno panelu (deiconify + podnieś na wierzch)."""
