@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 .playwright-mcp/
 *.bak*
+build/
+dist/
+*.egg-info/
+*.spec

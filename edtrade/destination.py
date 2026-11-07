@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 SPANSH_SYSTEM_URL = "https://spansh.co.uk/api/system/{id64}"
 ARDENT_SYSTEM_URL = "https://api.ardent-insight.com/v2/system/name/{system}"
-HEADERS = {"User-Agent": "EdTradeOverlay/0.1", "Accept": "application/json"}
+HEADERS = {"User-Agent": "EdTradeOverlay/1.0", "Accept": "application/json"}
 
 # Usługi warte pokazania w karcie: nazwa w "services" Spansh → etykieta na pasku
 SERVICES = (

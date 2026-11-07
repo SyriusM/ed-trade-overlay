@@ -110,7 +110,7 @@ def _ardent_commodity_names() -> list[dict]:
             resp = requests.get(
                 "https://api.ardent-insight.com/v2/commodities",
                 timeout=30,
-                headers={"User-Agent": "EdTradeOverlay/0.1"},
+                headers={"User-Agent": "EdTradeOverlay/1.0"},
             )
             resp.raise_for_status()
             _ARDENT_COMMODITIES.extend(resp.json())
@@ -145,7 +145,7 @@ def _spansh_search(url: str, payload: dict) -> list:
         resp = requests.post(
             url,
             json=payload,
-            headers={"User-Agent": "EdTradeOverlay/0.1", "Accept": "application/json"},
+            headers={"User-Agent": "EdTradeOverlay/1.0", "Accept": "application/json"},
             timeout=30,
         )
         resp.raise_for_status()
@@ -326,7 +326,7 @@ def _find_mineral_buyers_uncached(
         "systemName": reference_system,
         "maxDistance": max_ly,
     }
-    headers = {"User-Agent": "EdTradeOverlay/0.1"}
+    headers = {"User-Agent": "EdTradeOverlay/1.0"}
 
     try:
         resp = requests.get(url, params=params, headers=headers, timeout=30)
@@ -390,7 +390,7 @@ def find_commodity_sellers(
         "systemName": reference_system,
         "maxDistance": max_ly,
     }
-    headers = {"User-Agent": "EdTradeOverlay/0.1"}
+    headers = {"User-Agent": "EdTradeOverlay/1.0"}
 
     try:
         resp = requests.get(url, params=params, headers=headers, timeout=30)
@@ -488,7 +488,7 @@ def get_station_market(system_name: str, station_name: str) -> StationMarket:
     market = StationMarket(system_name=system_name, station_name=station_name)
     url = f"https://api.ardent-insight.com/v2/system/name/{requests.utils.quote(system_name)}/commodities"
     try:
-        resp = requests.get(url, headers={"User-Agent": "EdTradeOverlay/0.1"}, timeout=30)
+        resp = requests.get(url, headers={"User-Agent": "EdTradeOverlay/1.0"}, timeout=30)
         if resp.status_code == 404:
             market.error = f"System '{system_name}' nie znaleziony"
             return market
@@ -1009,7 +1009,7 @@ def get_station_id(station_name: str, system_name: Optional[str] = None) -> Opti
 
     try:
         resp = requests.get(url, timeout=15, headers={
-            "User-Agent": "EdTradeOverlay/0.1",
+            "User-Agent": "EdTradeOverlay/1.0",
         })
         resp.raise_for_status()
     except Exception as e:
@@ -1231,7 +1231,7 @@ def get_system_info(system_id64: str) -> SystemInfo:
 
     try:
         resp = requests.get(url, timeout=15, headers={
-            "User-Agent": "EdTradeOverlay/0.1",
+            "User-Agent": "EdTradeOverlay/1.0",
             "Accept": "application/json",
         })
         resp.raise_for_status()
@@ -1265,7 +1265,7 @@ def search_stations(system_name: str) -> list[StationInfo]:
 
     try:
         resp = requests.get(url, timeout=15, headers={
-            "User-Agent": "EdTradeOverlay/0.1",
+            "User-Agent": "EdTradeOverlay/1.0",
             "Accept": "application/json",
         })
         resp.raise_for_status()
@@ -1536,7 +1536,7 @@ class TradeEngine:
             payload["requires_large_pad"] = "1"
 
         headers_form = {
-            "User-Agent": "EdTradeOverlay/0.1",
+            "User-Agent": "EdTradeOverlay/1.0",
             "Accept": "application/json",
             "Content-Type": "application/x-www-form-urlencoded",
         }
@@ -1579,7 +1579,7 @@ class TradeEngine:
             try:
                 resp = requests.get(
                     f"https://spansh.co.uk/api/results/{job_id}",
-                    headers={"Accept": "application/json", "User-Agent": "EdTradeOverlay/0.1"},
+                    headers={"Accept": "application/json", "User-Agent": "EdTradeOverlay/1.0"},
                     timeout=15,
                 )
                 resp.raise_for_status()
@@ -1641,7 +1641,7 @@ class TradeEngine:
             payload["via"] = via_station
 
         headers_form = {
-            "User-Agent": "EdTradeOverlay/0.1",
+            "User-Agent": "EdTradeOverlay/1.0",
             "Accept": "application/json",
             "Content-Type": "application/x-www-form-urlencoded",
         }
@@ -1683,7 +1683,7 @@ class TradeEngine:
             try:
                 resp = requests.get(
                     f"https://spansh.co.uk/api/results/{job_id}",
-                    headers={"Accept": "application/json", "User-Agent": "EdTradeOverlay/0.1"},
+                    headers={"Accept": "application/json", "User-Agent": "EdTradeOverlay/1.0"},
                     timeout=15,
                 )
                 resp.raise_for_status()
@@ -1857,7 +1857,7 @@ class TradeEngine:
         try:
             resp = requests.get(
                 f"https://spansh.co.uk/api/system/{dest_id64}",
-                headers={"Accept": "application/json", "User-Agent": "EdTradeOverlay/0.1"},
+                headers={"Accept": "application/json", "User-Agent": "EdTradeOverlay/1.0"},
                 timeout=10,
             )
             resp.raise_for_status()

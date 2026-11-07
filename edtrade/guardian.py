@@ -22,7 +22,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 SPANSH_BODIES_URL = "https://spansh.co.uk/api/bodies/search"
-HEADERS = {"User-Agent": "EdTradeOverlay/0.1", "Accept": "application/json"}
+HEADERS = {"User-Agent": "EdTradeOverlay/1.0", "Accept": "application/json"}
 
 RUINS = "ruins"
 STRUCTURE = "structure"

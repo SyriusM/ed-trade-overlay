@@ -63,20 +63,45 @@ traders, mining hotspots, engineering blueprint shopping list from your material
 
 ![Settings](docs/screenshots/settings.png)
 
-## Running it
+## Installing
 
-Requirements: Linux with X11 (or XWayland), Python 3.12 with Tk, `requests`.
+Requirements: Linux with X11 or XWayland (KDE, GNOME, …), Elite Dangerous through Steam / Proton.
+
+**Option 1 — ready-made file (no Python needed).** Download `edto-linux-x86_64` from the
+[latest release](https://github.com/SyriusM/ed-trade-overlay/releases/latest), then:
 
 ```bash
-git clone https://github.com/SyriusM/ed-trade-overlay.git
-cd ed-trade-overlay
-pip install requests pyzmq      # pyzmq is optional (live EDDN prices)
-python -m edtrade.main          # finds the Proton journal folder automatically
-python -m edtrade.main --help   # journal dir, capacity, jump range, --no-panel, --no-overlay
+chmod +x edto-linux-x86_64
+./edto-linux-x86_64
 ```
 
-Run the game in borderless/windowed mode so the bar can stay on top. Settings (filters, bar transparency and
-font size, verdict icons/labels, clipboard, risk profile) are saved in `~/.config/ed-trade-overlay/`.
+**Option 2 — with Python 3.12+** (needs Tk: `sudo apt install python3-tk` on Debian/Ubuntu,
+`sudo dnf install python3-tkinter` on Fedora, `sudo pacman -S tk` on Arch):
+
+```bash
+pipx install "ed-trade-overlay[full] @ git+https://github.com/SyriusM/ed-trade-overlay"
+edto
+```
+
+`[full]` adds the optional extras: live EDDN prices (`pyzmq`) and global hotkeys (`pynput`). Without them the
+app still works.
+
+## Using it
+
+1. Start the game in **borderless or windowed** mode, so the bar can stay on top.
+2. Run `edto`. It finds the Proton journal folder by itself (`--journal-dir` if yours is elsewhere).
+3. Dock anywhere: the bar shows the best trade within seconds, the panel shows the full route and everything else.
+
+Default hotkeys use the numeric keypad, and the key position is the place on screen: **Shift+Num8** top bar,
+**Shift+Num2** bottom bar, **Shift+Num5** route, **Shift+Num4** nearby trades, **Shift+Num1** copy the target.
+They can be changed in **Settings**. To use them while the game has focus, bind a global desktop shortcut to
+`python -m edtrade.hotkeys key <digit>` (`python -m edtrade.hotkeys --list` prints yours).
+
+**Language:** English or Polish, picked from the system language. Change it in **Settings → Język / Language**
+(takes effect after a restart).
+
+Settings (filters, bar transparency and font size, verdict icons/labels, clipboard, risk profile, hotkeys,
+language) are saved in `~/.config/ed-trade-overlay/config.json`. `edto --help` lists the command-line options.
 
 ## Data sources
 
@@ -94,10 +119,19 @@ with or endorsed by Frontier.
 ## Development
 
 ```bash
-pip install requests pytest
+git clone https://github.com/SyriusM/ed-trade-overlay.git
+cd ed-trade-overlay
+pip install -e ".[dev,full]"
 python -m pytest            # offline: network calls are mocked
 ```
 
 Code layout: `edtrade/watcher.py` (journal), `trade.py` (APIs, routes, rankings), `assess.py` (SWOT
 verdicts), `verify.py` (live price checks), `checklist.py`, `session.py`, `pilot.py` (pace calibration),
-`overlay.py` (in-game bar), `panel.py` + `tce_theme.py` (panel UI). Design notes and decisions: `SPEC.md`.
+`overlay.py` (in-game bar), `panel.py` + `tce_theme.py` (panel UI), `i18n.py` (English / Polish UI). Design notes and decisions: `SPEC.md`.
+
+Releases: push a tag like `v1.0.0` and the `release` workflow runs the tests, builds the Python packages and the
+standalone Linux file, and prepares a draft release on GitHub.
+
+## License
+
+[MIT](LICENSE) © SyriusM

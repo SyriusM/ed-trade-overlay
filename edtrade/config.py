@@ -51,6 +51,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     'hotkey_modifier': 'Shift',
     'numpad_slots': dict(DEFAULT_SLOTS),
     'global_hotkeys': 'auto',
+    'language': 'auto',          # język interfejsu: 'auto' (wg locale systemu) / 'pl' / 'en'
 }
 
 

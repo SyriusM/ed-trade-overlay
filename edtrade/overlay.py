@@ -12,7 +12,7 @@ import tkinter.font as tkfont
 from typing import Optional, Callable
 
 from . import tce_theme as tce
-from . import assess
+from . import assess, i18n
 from .slide import SlidingBar
 from .trade import TradeRoute, age_hours
 
@@ -190,7 +190,7 @@ class TradeOverlay:
 
     def _set_fit(self, label: tk.Label, text: str, **kw) -> None:
         """Ustaw tekst dopasowany do szerokości etykiety; po zmianie rozmiaru/skali dopasowuje ponownie."""
-        label._full_text = text
+        label._full_text = text = i18n.tr(text)  # tłumaczenie przed mierzeniem szerokości
         if not getattr(label, "_fit_bound", False):
             base = tkfont.nametofont(str(label.cget("font")), root=label)
             label._base_font = base

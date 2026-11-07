@@ -266,19 +266,19 @@ def send(command: str, path: Optional[Path] = None) -> str:
 def main(argv: Optional[list[str]] = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if not args or args[0] in ("-h", "--help", "--list"):
-        print("Użycie: python -m edtrade.hotkeys <cel> | key <1-9>")
-        print("Cele: " + ", ".join(TARGETS))
+        print("Usage: python -m edtrade.hotkeys <target> | key <1-9>")
+        print("Targets: " + ", ".join(TARGETS))
         from .config import load_user_config
         config = load_user_config()
         mod = config.get("hotkey_modifier", DEFAULT_MODIFIER)
-        print("Twoje skróty (do skrótów globalnych KDE: polecenie = python -m edtrade.hotkeys key <cyfra>):")
+        print("Your hotkeys (for global desktop shortcuts use the command: python -m edtrade.hotkeys key <digit>):")
         for digit, target in sorted(slots_from_config(config).items()):
             print(f"  {(mod + '+') if mod else ''}Num{digit}: {target or '—'}")
         return 0
     try:
         reply = send(" ".join(args))
     except OSError as e:
-        print(f"Aplikacja nie działa albo gniazdo niedostępne ({socket_path()}): {e}", file=sys.stderr)
+        print(f"The app is not running or the socket is unavailable ({socket_path()}): {e}", file=sys.stderr)
         return 1
     print(reply)
     return 0 if reply == "ok" else 1
